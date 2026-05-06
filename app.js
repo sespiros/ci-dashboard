@@ -55,7 +55,7 @@ async function loadData() {
       }
     }));
     for (const [t, d] of results) {
-      normalizeStaleData(d);
+      normalizeStaleData(d, t);
       state.tiersData[t] = d;
     }
 
@@ -116,18 +116,63 @@ function dayKey(dateLike) {
   return startOfDay(new Date(dateLike)).toISOString().slice(0, 10);
 }
 
+// Tied to .github/workflows/e2e_nightly.yml: cron "30 23 * * *" UTC.
+const NIGHTLY_CRON_UTC_HOUR = 23;
+const NIGHTLY_CRON_UTC_MINUTE = 30;
+
+/**
+ * Latest "settled" calendar day for a tier. For nightly, today's run
+ * happens at 23:30 UTC; before that wall-clock moment we treat
+ * yesterday as the most recent settled day so the dashboard keeps
+ * showing last night's results instead of flipping every test to
+ * Missing the moment the calendar rolls over.
+ */
+function effectiveTodayMs(tierName) {
+  const now = new Date();
+  if (tierName === 'nightly' || tierName === 'nightlyfailures') {
+    const todayCron = new Date(Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
+      NIGHTLY_CRON_UTC_HOUR, NIGHTLY_CRON_UTC_MINUTE, 0, 0
+    ));
+    if (now < todayCron) {
+      const y = new Date(now);
+      y.setUTCDate(y.getUTCDate() - 1);
+      return startOfDay(y).getTime();
+    }
+  }
+  return startOfDay(now).getTime();
+}
+
+/**
+ * Latest real (non-padded, non-'none') run date in the tier. Used as
+ * the section heading anchor so the heading reflects when data
+ * actually arrived, not when the scraper ran.
+ */
+function getLastDataDate(tierData) {
+  let maxMs = 0;
+  const visit = (arr) => (arr || []).forEach(t => {
+    (t?.weatherHistory || []).forEach(d => {
+      if (!d || d.status === 'none' || d.synthetic) return;
+      const ms = new Date(d.date).getTime();
+      if (ms > maxMs) maxMs = ms;
+    });
+  });
+  visit(tierData?.allJobsSection?.tests);
+  (tierData?.sections || []).forEach(s => visit(s.tests));
+  return maxMs ? new Date(maxMs) : null;
+}
+
 /**
  * Pad weatherHistory with 'none' slots from the day after the last entry
- * through today, then keep only the trailing 10 days. Used to make stale
- * data visible (gray dots, rainy/stormy emoji) instead of pretending the
- * scraper's last anchor day is still "today".
+ * through the tier's effective today, then keep only the trailing 10
+ * days. Used to make stale data visible (gray dots, rainy/stormy emoji)
+ * instead of pretending the scraper's last anchor day is still "today".
  */
-function padWeatherHistoryToToday(test) {
+function padWeatherHistoryTo(test, effDayMs) {
   if (!test || !Array.isArray(test.weatherHistory) || test.weatherHistory.length === 0) return;
-  const todayStart = startOfDay(new Date()).getTime();
   let cursorMs = startOfDay(new Date(test.weatherHistory[test.weatherHistory.length - 1].date)).getTime();
   const dayMs = 24 * 60 * 60 * 1000;
-  while (cursorMs + dayMs <= todayStart) {
+  while (cursorMs + dayMs <= effDayMs) {
     cursorMs += dayMs;
     test.weatherHistory.push({
       date: new Date(cursorMs).toISOString(),
@@ -166,8 +211,9 @@ function syncStatusToLastDay(test) {
   }
 }
 
-function normalizeStaleData(tierData) {
+function normalizeStaleData(tierData, tierName) {
   if (!tierData) return;
+  const effDayMs = effectiveTodayMs(tierName);
   const buckets = [
     ...(tierData.sections || []),
     ...(tierData.allJobsSection ? [tierData.allJobsSection] : []),
@@ -175,7 +221,7 @@ function normalizeStaleData(tierData) {
     ...(tierData.cocoCAASection ? [tierData.cocoCAASection] : []),
   ];
   buckets.forEach(b => (b.tests || b.jobs || []).forEach(test => {
-    padWeatherHistoryToToday(test);
+    padWeatherHistoryTo(test, effDayMs);
     syncStatusToLastDay(test);
   }));
 }
@@ -207,22 +253,28 @@ function getLastSuccessDisplay(test) {
 }
 
 /**
- * Render a header date label. When data is fresh (<1 day) show the data
- * date plainly; when stale, append "(N days ago)" so the heading can't
- * be mistaken for a live "today" stamp.
+ * Render a header date label anchored to the latest real run date in
+ * the tier (not lastRefresh, which is when the scraper ran). The
+ * staleness suffix is computed against the tier's effective today, so
+ * a nightly view between midnight and 23:30 UTC reads "Wednesday,
+ * May 6" without a "(1 day ago)" tag — last night's run is still the
+ * latest until tonight's cron fires.
  */
-function renderHeaderDate(elId, lastRefreshIso) {
+function renderHeaderDate(elId, tierName, tierData) {
   const el = document.getElementById(elId);
   if (!el) return;
-  if (!lastRefreshIso) {
-    el.textContent = formatDate();
+  const lastDataDate = getLastDataDate(tierData);
+  if (!lastDataDate) {
+    el.textContent = tierData?.lastRefresh
+      ? new Date(tierData.lastRefresh).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+      : formatDate();
     el.classList.remove('stale');
     el.removeAttribute('title');
     return;
   }
-  const date = new Date(lastRefreshIso);
-  const label = date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
-  const ageDays = Math.floor((startOfDay(new Date()) - startOfDay(date)) / (24 * 60 * 60 * 1000));
+  const label = lastDataDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const effMs = effectiveTodayMs(tierName);
+  const ageDays = Math.floor((effMs - startOfDay(lastDataDate).getTime()) / (24 * 60 * 60 * 1000));
   if (ageDays <= 0) {
     el.textContent = label;
     el.classList.remove('stale');
@@ -230,7 +282,8 @@ function renderHeaderDate(elId, lastRefreshIso) {
   } else {
     el.textContent = `${label} (${ageDays} day${ageDays === 1 ? '' : 's'} ago)`;
     el.classList.add('stale');
-    el.title = `Data anchor is ${ageDays} day(s) old; latest refresh: ${date.toLocaleString()}`;
+    const refreshNote = tierData?.lastRefresh ? `; latest scrape: ${new Date(tierData.lastRefresh).toLocaleString()}` : '';
+    el.title = `Latest run is ${ageDays} day(s) behind today's expected run${refreshNote}`;
   }
 }
 
@@ -622,9 +675,9 @@ function render() {
 
   // Anchor the section heading dates to the data, not to today, so a
   // stale dashboard can't masquerade as live.
-  renderHeaderDate('current-date', state.data.lastRefresh);
-  renderHeaderDate('coco-current-date', state.data.lastRefresh);
-  renderHeaderDate('caa-current-date', state.data.lastRefresh);
+  renderHeaderDate('current-date', state.activeTab, state.data);
+  renderHeaderDate('coco-current-date', state.activeTab, state.data);
+  renderHeaderDate('caa-current-date', state.activeTab, state.data);
 }
 
 /**
