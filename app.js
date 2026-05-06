@@ -145,6 +145,27 @@ function padWeatherHistoryToToday(test) {
   }
 }
 
+/**
+ * Reflect the last day in the window (i.e. today) on the test status,
+ * not the last day a job was recorded. Without this, a test that passed
+ * on the scraper's anchor day keeps showing "Passed" even when the
+ * window has slid forward and today's slot is empty. When the last slot
+ * is synthetic (no real run today) we also clear duration and error so
+ * the row doesn't advertise stale facts while claiming "Missing".
+ */
+function syncStatusToLastDay(test) {
+  if (!test || !Array.isArray(test.weatherHistory) || test.weatherHistory.length === 0) return;
+  const last = test.weatherHistory[test.weatherHistory.length - 1];
+  const map = { passed: 'passed', failed: 'failed', running: 'running', not_run: 'not_run', none: 'not_run' };
+  const synced = map[last.status];
+  if (!synced) return;
+  test.status = synced;
+  if (last.synthetic) {
+    test.duration = 'N/A';
+    test.error = null;
+  }
+}
+
 function normalizeStaleData(tierData) {
   if (!tierData) return;
   const buckets = [
@@ -153,7 +174,10 @@ function normalizeStaleData(tierData) {
     ...(tierData.cocoChartsSection ? [tierData.cocoChartsSection] : []),
     ...(tierData.cocoCAASection ? [tierData.cocoCAASection] : []),
   ];
-  buckets.forEach(b => (b.tests || b.jobs || []).forEach(padWeatherHistoryToToday));
+  buckets.forEach(b => (b.tests || b.jobs || []).forEach(test => {
+    padWeatherHistoryToToday(test);
+    syncStatusToLastDay(test);
+  }));
 }
 
 /**
