@@ -54,7 +54,10 @@ async function loadData() {
         return [t, null];
       }
     }));
-    for (const [t, d] of results) state.tiersData[t] = d;
+    for (const [t, d] of results) {
+      normalizeStaleData(d);
+      state.tiersData[t] = d;
+    }
 
     if (!state.tiersData.nightly) {
       throw new Error('data-nightly.json not available; run ./contrast-local.sh fetch');
@@ -102,6 +105,110 @@ function updateFlakyBadge() {
 // ============================================
 // Utility Functions
 // ============================================
+
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function dayKey(dateLike) {
+  return startOfDay(new Date(dateLike)).toISOString().slice(0, 10);
+}
+
+/**
+ * Pad weatherHistory with 'none' slots from the day after the last entry
+ * through today, then keep only the trailing 10 days. Used to make stale
+ * data visible (gray dots, rainy/stormy emoji) instead of pretending the
+ * scraper's last anchor day is still "today".
+ */
+function padWeatherHistoryToToday(test) {
+  if (!test || !Array.isArray(test.weatherHistory) || test.weatherHistory.length === 0) return;
+  const todayStart = startOfDay(new Date()).getTime();
+  let cursorMs = startOfDay(new Date(test.weatherHistory[test.weatherHistory.length - 1].date)).getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+  while (cursorMs + dayMs <= todayStart) {
+    cursorMs += dayMs;
+    test.weatherHistory.push({
+      date: new Date(cursorMs).toISOString(),
+      status: 'none',
+      runId: null,
+      jobId: null,
+      duration: null,
+      failureStep: null,
+      failureDetails: null,
+      synthetic: true
+    });
+  }
+  if (test.weatherHistory.length > 10) {
+    test.weatherHistory = test.weatherHistory.slice(-10);
+  }
+}
+
+function normalizeStaleData(tierData) {
+  if (!tierData) return;
+  const buckets = [
+    ...(tierData.sections || []),
+    ...(tierData.allJobsSection ? [tierData.allJobsSection] : []),
+    ...(tierData.cocoChartsSection ? [tierData.cocoChartsSection] : []),
+    ...(tierData.cocoCAASection ? [tierData.cocoCAASection] : []),
+  ];
+  buckets.forEach(b => (b.tests || b.jobs || []).forEach(padWeatherHistoryToToday));
+}
+
+/**
+ * Find the most recent weatherHistory entry with the given status and
+ * format it relative to actual today. Falls back to 'Never' when no
+ * entry of that status exists in the windowed history. We deliberately
+ * ignore test.lastFailure / test.lastSuccess because those are static
+ * strings ("3h ago", "Yesterday") baked in at scrape time and become
+ * misleading once the data is more than a day old.
+ */
+function computeLastEventDate(test, status) {
+  const hist = test?.weatherHistory || [];
+  for (let i = hist.length - 1; i >= 0; i--) {
+    if (hist[i].status === status) return new Date(hist[i].date);
+  }
+  return null;
+}
+
+function getLastFailureDisplay(test) {
+  const d = computeLastEventDate(test, 'failed');
+  return d ? formatRelativeTime(d.toISOString()) : 'Never';
+}
+
+function getLastSuccessDisplay(test) {
+  const d = computeLastEventDate(test, 'passed');
+  return d ? formatRelativeTime(d.toISOString()) : 'Never';
+}
+
+/**
+ * Render a header date label. When data is fresh (<1 day) show the data
+ * date plainly; when stale, append "(N days ago)" so the heading can't
+ * be mistaken for a live "today" stamp.
+ */
+function renderHeaderDate(elId, lastRefreshIso) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!lastRefreshIso) {
+    el.textContent = formatDate();
+    el.classList.remove('stale');
+    el.removeAttribute('title');
+    return;
+  }
+  const date = new Date(lastRefreshIso);
+  const label = date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const ageDays = Math.floor((startOfDay(new Date()) - startOfDay(date)) / (24 * 60 * 60 * 1000));
+  if (ageDays <= 0) {
+    el.textContent = label;
+    el.classList.remove('stale');
+    el.removeAttribute('title');
+  } else {
+    el.textContent = `${label} (${ageDays} day${ageDays === 1 ? '' : 's'} ago)`;
+    el.classList.add('stale');
+    el.title = `Data anchor is ${ageDays} day(s) old; latest refresh: ${date.toLocaleString()}`;
+  }
+}
 
 function getWeatherFromHistory(weatherHistory) {
   if (!weatherHistory) return [];
@@ -482,12 +589,18 @@ function render() {
   renderSections();
   updateJobCount();
   renderRenameWarnings();
-  
+
   // Update last refresh time
   if (state.data.lastRefresh) {
-    document.getElementById('last-refresh-time').textContent = 
+    document.getElementById('last-refresh-time').textContent =
       formatRelativeTime(state.data.lastRefresh);
   }
+
+  // Anchor the section heading dates to the data, not to today, so a
+  // stale dashboard can't masquerade as live.
+  renderHeaderDate('current-date', state.data.lastRefresh);
+  renderHeaderDate('coco-current-date', state.data.lastRefresh);
+  renderHeaderDate('caa-current-date', state.data.lastRefresh);
 }
 
 /**
@@ -885,10 +998,10 @@ function renderTestRow(sectionId, test) {
         <span class="test-run-duration">${test.duration || 'N/A'}</span>
       </div>
       <div class="test-time-col">
-        ${test.lastFailure === 'Never' || !test.lastFailure ? '<span class="never">Never</span>' : test.lastFailure}
+        ${(() => { const v = getLastFailureDisplay(test); return v === 'Never' ? '<span class="never">Never</span>' : v; })()}
       </div>
       <div class="test-time-col">
-        ${test.lastSuccess || 'N/A'}
+        ${(() => { const v = getLastSuccessDisplay(test); return v === 'Never' ? '<span class="never">Never</span>' : v; })()}
       </div>
       <div class="test-weather-col" data-test-id="${test.id}" data-section-id="${sectionId}" title="Click for 10-day history">
         <div class="weather-dots">${weatherDots}</div>
@@ -1103,11 +1216,12 @@ function showWeatherModal(sectionId, testId) {
     : '';
   
   const historySrc = flatTier ? test.weatherHistory.filter(d => d.runId) : test.weatherHistory;
+  const todayKey = dayKey(new Date());
   const daysHtml = [...historySrc].reverse().map((day, index) => {
     const date = new Date(day.date);
     const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
     const formatted = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const isToday = index === 0;
+    const isToday = dayKey(day.date) === todayKey;
     
     // Get failing tests for this day, deduplicate by name
     const rawDayFailures = day.failureDetails?.failures || [];
@@ -2624,10 +2738,10 @@ function renderCocoTestRow(test, sectionId, sourceRepo) {
         <span class="test-run-duration">${test.duration || 'N/A'}</span>
       </div>
       <div class="test-time-col">
-        ${test.lastFailure === 'Never' || !test.lastFailure ? '<span class="never">Never</span>' : test.lastFailure}
+        ${(() => { const v = getLastFailureDisplay(test); return v === 'Never' ? '<span class="never">Never</span>' : v; })()}
       </div>
       <div class="test-time-col">
-        ${test.lastSuccess || 'N/A'}
+        ${(() => { const v = getLastSuccessDisplay(test); return v === 'Never' ? '<span class="never">Never</span>' : v; })()}
       </div>
       <div class="test-weather-col" data-test-id="${test.id}" data-section-id="${sectionId}" title="Click for 10-day history">
         <div class="weather-dots">${weatherDots}</div>
