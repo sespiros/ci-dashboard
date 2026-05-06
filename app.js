@@ -119,26 +119,33 @@ function dayKey(dateLike) {
 // Tied to .github/workflows/e2e_nightly.yml: cron "30 23 * * *" UTC.
 const NIGHTLY_CRON_UTC_HOUR = 23;
 const NIGHTLY_CRON_UTC_MINUTE = 30;
+// Wait this long after the cron fires before we expect today's run +
+// scrape to be reflected in the data. Avoids briefly flipping every
+// test to Missing while the run is still executing.
+const NIGHTLY_AVAILABILITY_BUFFER_MS = 60 * 60 * 1000;
+
+function mostRecentNightlyCronTime(now) {
+  const todayCron = new Date(Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
+    NIGHTLY_CRON_UTC_HOUR, NIGHTLY_CRON_UTC_MINUTE
+  ));
+  if (now.getTime() >= todayCron.getTime() + NIGHTLY_AVAILABILITY_BUFFER_MS) {
+    return todayCron;
+  }
+  return new Date(todayCron.getTime() - 24 * 60 * 60 * 1000);
+}
 
 /**
- * Latest "settled" calendar day for a tier. For nightly, today's run
- * happens at 23:30 UTC; before that wall-clock moment we treat
- * yesterday as the most recent settled day so the dashboard keeps
- * showing last night's results instead of flipping every test to
- * Missing the moment the calendar rolls over.
+ * Latest "settled" calendar day for a tier, expressed as a local
+ * start-of-day ms timestamp. For nightly we anchor to the most recent
+ * cron firing (plus a buffer for run + scrape), so the dashboard keeps
+ * showing last night's results until tonight's run actually lands
+ * instead of flipping the moment the calendar rolls over.
  */
 function effectiveTodayMs(tierName) {
   const now = new Date();
   if (tierName === 'nightly' || tierName === 'nightlyfailures') {
-    const todayCron = new Date(Date.UTC(
-      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
-      NIGHTLY_CRON_UTC_HOUR, NIGHTLY_CRON_UTC_MINUTE, 0, 0
-    ));
-    if (now < todayCron) {
-      const y = new Date(now);
-      y.setUTCDate(y.getUTCDate() - 1);
-      return startOfDay(y).getTime();
-    }
+    return startOfDay(mostRecentNightlyCronTime(now)).getTime();
   }
   return startOfDay(now).getTime();
 }
@@ -163,13 +170,20 @@ function getLastDataDate(tierData) {
 }
 
 /**
- * Pad weatherHistory with 'none' slots from the day after the last entry
- * through the tier's effective today, then keep only the trailing 10
- * days. Used to make stale data visible (gray dots, rainy/stormy emoji)
- * instead of pretending the scraper's last anchor day is still "today".
+ * Align weatherHistory to the tier's effective today: drop slots that
+ * sit beyond it (e.g. the scraper's anchor "today" when tonight's
+ * nightly hasn't fired yet, which would otherwise be an empty slot
+ * that drags every row's status to Missing), then pad missing days up
+ * to effective today with synthetic 'none' slots so stale windows are
+ * visible (gray dots, rainy/stormy emoji), then trim to the trailing
+ * 10 days.
  */
-function padWeatherHistoryTo(test, effDayMs) {
+function alignWeatherHistory(test, effDayMs) {
   if (!test || !Array.isArray(test.weatherHistory) || test.weatherHistory.length === 0) return;
+  test.weatherHistory = test.weatherHistory.filter(d => {
+    return startOfDay(new Date(d.date)).getTime() <= effDayMs;
+  });
+  if (test.weatherHistory.length === 0) return;
   let cursorMs = startOfDay(new Date(test.weatherHistory[test.weatherHistory.length - 1].date)).getTime();
   const dayMs = 24 * 60 * 60 * 1000;
   while (cursorMs + dayMs <= effDayMs) {
@@ -221,7 +235,7 @@ function normalizeStaleData(tierData, tierName) {
     ...(tierData.cocoCAASection ? [tierData.cocoCAASection] : []),
   ];
   buckets.forEach(b => (b.tests || b.jobs || []).forEach(test => {
-    padWeatherHistoryTo(test, effDayMs);
+    alignWeatherHistory(test, effDayMs);
     syncStatusToLastDay(test);
   }));
 }
