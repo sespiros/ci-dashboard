@@ -12,6 +12,19 @@ const yaml = require('js-yaml');
 
 console.log('Starting data processing...');
 
+// Bucket dates by UTC day so weather slots are timezone-independent.
+// Without this, jobs whose started_at crosses local midnight land in
+// the "next day" slot for eastern-timezone scrapers, leaving the
+// expected slot empty and flipping rows to Missing.
+function utcDayKey(d) {
+  return new Date(d).toISOString().slice(0, 10);
+}
+function utcStartOfDay(d) {
+  const x = new Date(d);
+  x.setUTCHours(0, 0, 0, 0);
+  return x;
+}
+
 // Load config
 let config;
 try {
@@ -540,14 +553,15 @@ const sections = (config.sections || []).map(sectionConfig => {
     // Build weather history (last 10 days from anchor)
     const weatherHistory = [];
     for (let i = 0; i < 10; i++) {
-      const date = new Date(anchorDate);
-      date.setDate(date.getDate() - (9 - i));
-      date.setHours(0, 0, 0, 0);
-      
+      const date = utcStartOfDay(anchorDate);
+      date.setUTCDate(date.getUTCDate() - (9 - i));
+      const dateKey = utcDayKey(date);
+
       // Find job for this day - only use jobs that have the "Run tests" step
       const dayJobs = matchingJobs.filter(job => {
-        const jobDate = new Date(job.started_at || job.created_at);
-        return jobDate.toDateString() === date.toDateString();
+        // Bucket by created_at (queue time): cron-fired jobs all carry the
+        // cron's UTC day even if a slow runner pushes started_at past midnight.
+        return utcDayKey(job.created_at || job.started_at) === dateKey;
       });
       
       // Pick the first job that has a "Run tests" step, otherwise null (not run)
@@ -579,12 +593,10 @@ const sections = (config.sections || []).map(sectionConfig => {
           
           // If no fresh log, try to get from cache
           if (!dayFailures && cachedWeather) {
-            const cachedDay = cachedWeather.find(c => 
-              new Date(c.date).toDateString() === date.toDateString()
-            );
+            const cachedDay = cachedWeather.find(c => utcDayKey(c.date) === dateKey);
             if (cachedDay?.failureDetails) {
               dayFailures = cachedDay.failureDetails;
-              console.log(`  Using cached failure details for ${date.toISOString().split('T')[0]}`);
+              console.log(`  Using cached failure details for ${dateKey}`);
             }
           }
           
@@ -627,9 +639,7 @@ const sections = (config.sections || []).map(sectionConfig => {
         }
       } else if (cachedWeather) {
         // No fresh data for this day, use cache if available
-        const cachedDay = cachedWeather.find(c => 
-          new Date(c.date).toDateString() === date.toDateString()
-        );
+        const cachedDay = cachedWeather.find(c => utcDayKey(c.date) === dateKey);
         if (cachedDay) {
           dayStatus = cachedDay.status;
           dayFailures = cachedDay.failureDetails;
@@ -964,15 +974,16 @@ const allJobsSection = {
     const weatherHistory = [];
     const anchorDate = new Date();
     for (let i = 0; i < 10; i++) {
-      const date = new Date(anchorDate);
-      date.setDate(date.getDate() - (9 - i));
-      date.setHours(0, 0, 0, 0);
-      
+      const date = utcStartOfDay(anchorDate);
+      date.setUTCDate(date.getUTCDate() - (9 - i));
+      const dateKey = utcDayKey(date);
+
       const dayJobs = matchingJobs.filter(job => {
-        const jobDate = new Date(job.started_at || job.created_at);
-        return jobDate.toDateString() === date.toDateString();
+        // Bucket by created_at (queue time): cron-fired jobs all carry the
+        // cron's UTC day even if a slow runner pushes started_at past midnight.
+        return utcDayKey(job.created_at || job.started_at) === dateKey;
       });
-      
+
       // Group day's jobs by workflow_run_id
       const dayJobsByRun = {};
       for (const job of dayJobs) {
@@ -1255,8 +1266,8 @@ function mergeWeatherHistory(newHistory, oldHistory) {
   
   // For each day in old history, if new history has 'none', use old
   oldHistory.forEach(oldDay => {
-    const oldDate = new Date(oldDay.date).toDateString();
-    const newDayIndex = merged.findIndex(d => new Date(d.date).toDateString() === oldDate);
+    const oldDate = utcDayKey(oldDay.date);
+    const newDayIndex = merged.findIndex(d => utcDayKey(d.date) === oldDate);
     
     if (newDayIndex !== -1 && merged[newDayIndex].status === 'none' && oldDay.status !== 'none') {
       merged[newDayIndex] = { ...oldDay };
@@ -1393,13 +1404,14 @@ try {
         const weatherHistory = [];
         const anchorDate = new Date();
         for (let i = 0; i < 10; i++) {
-          const date = new Date(anchorDate);
-          date.setDate(date.getDate() - (9 - i));
-          date.setHours(0, 0, 0, 0);
-          
+          const date = utcStartOfDay(anchorDate);
+          date.setUTCDate(date.getUTCDate() - (9 - i));
+          const dateKey = utcDayKey(date);
+
           const dayJobs = matchingJobs.filter(job => {
-            const jobDate = new Date(job.started_at || job.created_at);
-            return jobDate.toDateString() === date.toDateString();
+            // Bucket by created_at (queue time): cron-fired jobs all carry the
+        // cron's UTC day even if a slow runner pushes started_at past midnight.
+        return utcDayKey(job.created_at || job.started_at) === dateKey;
           });
           
           const dayJob = dayJobs[0] || null;
@@ -1544,13 +1556,14 @@ try {
         const weatherHistory = [];
         const anchorDate = new Date();
         for (let i = 0; i < 10; i++) {
-          const date = new Date(anchorDate);
-          date.setDate(date.getDate() - (9 - i));
-          date.setHours(0, 0, 0, 0);
-          
+          const date = utcStartOfDay(anchorDate);
+          date.setUTCDate(date.getUTCDate() - (9 - i));
+          const dateKey = utcDayKey(date);
+
           const dayJobs = matchingJobs.filter(job => {
-            const jobDate = new Date(job.started_at || job.created_at);
-            return jobDate.toDateString() === date.toDateString();
+            // Bucket by created_at (queue time): cron-fired jobs all carry the
+        // cron's UTC day even if a slow runner pushes started_at past midnight.
+        return utcDayKey(job.created_at || job.started_at) === dateKey;
           });
           
           const dayJob = dayJobs[0] || null;
