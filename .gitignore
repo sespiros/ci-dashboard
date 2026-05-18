@@ -16,6 +16,9 @@ job-logs/
 pr-job-logs/
 .env.local
 
+# Per-session Claude Code state
+.claude/
+
 # Contrast scraper artefacts (per-tier scrape + processed outputs)
 all-jobs-*.json
 raw-runs-*.json

@@ -49,6 +49,14 @@ declare -A TIER_JOB_PREFIX_EXCLUDE=(
     [release]="release-requirement: e2e nightly / "
 )
 
+# Workflows we want scoped to a single branch. release_nightly is
+# main-only by intent; older runs from the feature branch that landed
+# it (ch/nightly-release-pipeline) used different job-name prefixes and
+# would slip past TIER_JOB_PREFIX_EXCLUDE.
+declare -A WORKFLOW_BRANCH_FILTER=(
+    [release_nightly.yml]="main"
+)
+
 if date -v-1d +%Y-%m-%d >/dev/null 2>&1; then
     SINCE=$(date -v-${DAYS}d +%Y-%m-%d)
 else
@@ -62,11 +70,18 @@ fetch_tier() {
 
     echo '[]' > "all-jobs-${tier}.json"
     for wf in $workflows; do
-        echo "  .. $wf"
+        local branch_qs=""
+        local branch="${WORKFLOW_BRANCH_FILTER[$wf]:-}"
+        if [ -n "$branch" ]; then
+            branch_qs="&branch=${branch}"
+            echo "  .. $wf (branch=$branch)"
+        else
+            echo "  .. $wf"
+        fi
         if ! gh api \
             -H "Accept: application/vnd.github+json" \
             --paginate \
-            "repos/${REPO}/actions/workflows/${wf}/runs?created=>${SINCE}&per_page=50" \
+            "repos/${REPO}/actions/workflows/${wf}/runs?created=>${SINCE}&per_page=50${branch_qs}" \
             --jq '.workflow_runs' 2>/dev/null | jq -s 'add // []' > "runs-${tier}-${wf}.json"; then
             echo "     (workflow not found or no runs; skipping)"
             echo '[]' > "runs-${tier}-${wf}.json"
