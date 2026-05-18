@@ -28,11 +28,26 @@ MAX_LOGS_PER_TIER=40
 
 # tier => space-separated workflow filenames
 declare -A TIER_WORKFLOWS=(
-    [nightly]="e2e_nightly.yml"
+    [nightly]="release_nightly.yml"
     [scheduled]="k3s_compatibility.yml rim_updates.yml e2e_runtime-reproducibility.yml"
-    [release]="release_publish.yml pr_release_artifacts.yml"
+    [release]="release_publish.yml pr_release_artifacts.yml release_nightly.yml"
 )
 TIERS=(nightly scheduled release)
+
+# Some tiers consume reusable workflows whose jobs are exposed under a
+# parent-job prefix (e.g. "release-requirement: e2e nightly / <…>"). The
+# scraper drops jobs that don't carry the prefix and strips it from those
+# that do, so the resulting names match what config.yaml expects.
+declare -A TIER_JOB_PREFIX_STRIP=(
+    [nightly]="release-requirement: e2e nightly / "
+)
+
+# Some tiers ingest a workflow that bundles unrelated sub-jobs (e.g.
+# release_nightly invokes e2e_nightly, but those jobs belong to the
+# Nightly tab). Drop names that start with any of these prefixes.
+declare -A TIER_JOB_PREFIX_EXCLUDE=(
+    [release]="release-requirement: e2e nightly / "
+)
 
 if date -v-1d +%Y-%m-%d >/dev/null 2>&1; then
     SINCE=$(date -v-${DAYS}d +%Y-%m-%d)
@@ -76,6 +91,24 @@ fetch_tier() {
             mv temp-jobs.json "all-jobs-${tier}.json"
         done
     done
+
+    local prefix="${TIER_JOB_PREFIX_STRIP[$tier]:-}"
+    if [ -n "$prefix" ]; then
+        jq --arg p "$prefix" \
+           '[ .[] | select(.name | startswith($p)) | .name |= ltrimstr($p) ]' \
+           "all-jobs-${tier}.json" > "all-jobs-${tier}.tmp" && \
+            mv "all-jobs-${tier}.tmp" "all-jobs-${tier}.json"
+        echo "  stripped prefix '$prefix' ($(jq 'length' "all-jobs-${tier}.json") jobs retained)"
+    fi
+
+    local exclude="${TIER_JOB_PREFIX_EXCLUDE[$tier]:-}"
+    if [ -n "$exclude" ]; then
+        jq --arg p "$exclude" \
+           '[ .[] | select(.name | startswith($p) | not) ]' \
+           "all-jobs-${tier}.json" > "all-jobs-${tier}.tmp" && \
+            mv "all-jobs-${tier}.tmp" "all-jobs-${tier}.json"
+        echo "  excluded prefix '$exclude' ($(jq 'length' "all-jobs-${tier}.json") jobs retained)"
+    fi
 
     echo '{"jobs":' > "raw-runs-${tier}.json"
     cat "all-jobs-${tier}.json" >> "raw-runs-${tier}.json"
