@@ -116,13 +116,18 @@ function dayKey(dateLike) {
   return startOfDay(new Date(dateLike)).toISOString().slice(0, 10);
 }
 
-// Tied to .github/workflows/e2e_nightly.yml: cron "30 23 * * *" UTC.
-const NIGHTLY_CRON_UTC_HOUR = 23;
-const NIGHTLY_CRON_UTC_MINUTE = 30;
+// Tied to .github/workflows/release_nightly.yml: cron "15 20 * * *" UTC
+// (the workflow that drives the nightly e2e matrix as a workflow_call
+// since edgelesssys/contrast@c2da979).
+const NIGHTLY_CRON_UTC_HOUR = 20;
+const NIGHTLY_CRON_UTC_MINUTE = 15;
 // Wait this long after the cron fires before we expect today's run +
-// scrape to be reflected in the data. Avoids briefly flipping every
-// test to Missing while the run is still executing.
-const NIGHTLY_AVAILABILITY_BUFFER_MS = 60 * 60 * 1000;
+// scrape to be reflected in the data. The release pipeline takes
+// ~4-5h to complete and refresh-data.yml polls every 3h, so the
+// worst-case gap from cron-fire to "data in the dashboard" is ~8h.
+// Avoids briefly flipping every test to Missing while the run is
+// still executing or before the next scrape lands.
+const NIGHTLY_AVAILABILITY_BUFFER_MS = 8 * 60 * 60 * 1000;
 
 function mostRecentNightlyCronTime(now) {
   const todayCron = new Date(Date.UTC(
