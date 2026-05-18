@@ -228,6 +228,12 @@ function syncStatusToLastDay(test) {
 function normalizeStaleData(tierData, tierName) {
   if (!tierData) return;
   const effDayMs = effectiveTodayMs(tierName);
+  // syncStatusToLastDay assumes a daily cadence (nightly): an empty
+  // slot for today means "expected run is missing". The scheduled and
+  // release tiers fire weekly / on-demand, so an empty Monday slot is
+  // not a missing run, it's just not Sunday. Skip the status override
+  // for those; keep the padding so calendar gaps still render.
+  const syncStatus = tierName === 'nightly' || tierName === 'nightlyfailures';
   const buckets = [
     ...(tierData.sections || []),
     ...(tierData.allJobsSection ? [tierData.allJobsSection] : []),
@@ -236,7 +242,7 @@ function normalizeStaleData(tierData, tierName) {
   ];
   buckets.forEach(b => (b.tests || b.jobs || []).forEach(test => {
     alignWeatherHistory(test, effDayMs);
-    syncStatusToLastDay(test);
+    if (syncStatus) syncStatusToLastDay(test);
   }));
 }
 
