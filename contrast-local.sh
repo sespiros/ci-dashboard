@@ -49,12 +49,18 @@ declare -A TIER_JOB_PREFIX_EXCLUDE=(
     [release]="release-requirement: e2e nightly / "
 )
 
-# Workflows we want scoped to a single branch. release_nightly is
-# main-only by intent; older runs from the feature branch that landed
-# it (ch/nightly-release-pipeline) used different job-name prefixes and
-# would slip past TIER_JOB_PREFIX_EXCLUDE.
+# Workflows we want scoped to a single branch. Most should be
+# main-only so feature-branch workflow_dispatch runs (e.g.
+# automated/nvidia-rim-updates or one-off CI experiments) don't
+# pollute the dashboard. The intentional exception is
+# release_publish.yml, which fires on tag pushes and would return
+# zero runs under any branch filter.
 declare -A WORKFLOW_BRANCH_FILTER=(
     [release_nightly.yml]="main"
+    [k3s_compatibility.yml]="main"
+    [rim_updates.yml]="main"
+    [e2e_runtime-reproducibility.yml]="main"
+    [pr_release_artifacts.yml]="main"
 )
 
 if date -v-1d +%Y-%m-%d >/dev/null 2>&1; then
@@ -123,6 +129,19 @@ fetch_tier() {
            "all-jobs-${tier}.json" > "all-jobs-${tier}.tmp" && \
             mv "all-jobs-${tier}.tmp" "all-jobs-${tier}.json"
         echo "  excluded prefix '$exclude' ($(jq 'length' "all-jobs-${tier}.json") jobs retained)"
+    fi
+
+    # Drop GitHub Actions matrix-template ghost rows ("release-requirement:
+    # e2e release on ${{ matrix.platform.name }}"). These appear when a
+    # matrix dependency fails before interpolation and carry no signal.
+    local before_ghost after_ghost
+    before_ghost=$(jq 'length' "all-jobs-${tier}.json")
+    jq '[ .[] | select(.name | contains("${{") | not) ]' \
+       "all-jobs-${tier}.json" > "all-jobs-${tier}.tmp" && \
+        mv "all-jobs-${tier}.tmp" "all-jobs-${tier}.json"
+    after_ghost=$(jq 'length' "all-jobs-${tier}.json")
+    if [ "$before_ghost" != "$after_ghost" ]; then
+        echo "  dropped \${{ }} ghost rows ($after_ghost jobs retained, was $before_ghost)"
     fi
 
     echo '{"jobs":' > "raw-runs-${tier}.json"
