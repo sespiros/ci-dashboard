@@ -46,10 +46,6 @@
           <span class="tab-icon">🌙</span>
           Nightly
         </button>
-        <button class="tab" data-tab="nightlyfailures">
-          <span class="tab-icon">🔴</span>
-          Nightly Failures
-        </button>
         <button class="tab" data-tab="scheduled">
           <span class="tab-icon">📅</span>
           Scheduled
@@ -83,6 +79,10 @@
           <span class="stat-value" id="running-tests">0</span>
           <span class="stat-label">Running</span>
         </div>
+        <div class="stat stat-flaky">
+          <span class="stat-value" id="flaky-tests">0</span>
+          <span class="stat-label">Passed After Retry</span>
+        </div>
         <div class="stat stat-passed">
           <span class="stat-value" id="passed-tests">0</span>
           <span class="stat-label">Passed</span>
@@ -105,6 +105,9 @@
           </button>
           <button class="filter-btn" data-filter="running">
             <span class="dot dot-running"></span> Running (<span id="filter-running-count">0</span>)
+          </button>
+          <button class="filter-btn" data-filter="flaky">
+            <span class="dot dot-flaky"></span> Retry-pass (<span id="filter-flaky-count">0</span>)
           </button>
           <button class="filter-btn" data-filter="passed">
             <span class="dot dot-passed"></span> Passed (<span id="filter-passed-count">0</span>)
@@ -171,32 +174,6 @@
       <div class="sections" id="sections-container">
         <!-- Sections will be rendered by JavaScript -->
       </div>
-    </main>
-
-    <!-- Nightly Failures Tab (aggregated from data-nightly.json) -->
-    <main class="content tab-content" id="nightlyfailures-content">
-      <div class="quick-stats">
-        <div class="stat stat-failed">
-          <span class="stat-value" id="nf-tests">0</span>
-          <span class="stat-label">Sub-tests with failures</span>
-        </div>
-        <div class="stat">
-          <span class="stat-value" id="nf-occurrences">0</span>
-          <span class="stat-label">Failure-days</span>
-        </div>
-        <div class="stat stat-passed">
-          <span class="stat-value" id="nf-jobs">0</span>
-          <span class="stat-label">Jobs affected</span>
-        </div>
-      </div>
-      <div class="filters">
-        <div class="search-box">
-          <span class="search-icon">🔍</span>
-          <input type="text" id="search-nightly-failures" placeholder="Search tests, files, or platforms...">
-        </div>
-      </div>
-      <p class="section-subtitle">One row per failing nightly job (platform breakdown shown inline). Search by job name, platform, or sub-test.</p>
-      <div id="nightly-failures-list"></div>
     </main>
 
     </div><!-- End Contrast Content -->
@@ -397,4 +374,3 @@
   <script src="app.js"></script>
 </body>
 </html>
-

@@ -73,7 +73,7 @@ async function loadData() {
       allSections.forEach(section => {
         if (!section?.id) return;
         state.expandedSections.add(section.id);
-        ['failed', 'missing', 'running'].forEach(g => state.expandedGroups.add(`${section.id}-${g}`));
+        ['failed', 'flaky', 'missing', 'running'].forEach(g => state.expandedGroups.add(`${section.id}-${g}`));
       });
     });
 
@@ -149,7 +149,7 @@ function mostRecentNightlyCronTime(now) {
  */
 function effectiveTodayMs(tierName) {
   const now = new Date();
-  if (tierName === 'nightly' || tierName === 'nightlyfailures') {
+  if (tierName === 'nightly') {
     return startOfDay(mostRecentNightlyCronTime(now)).getTime();
   }
   return startOfDay(now).getTime();
@@ -238,7 +238,7 @@ function normalizeStaleData(tierData, tierName) {
   // release tiers fire weekly / on-demand, so an empty Monday slot is
   // not a missing run, it's just not Sunday. Skip the status override
   // for those; keep the padding so calendar gaps still render.
-  const syncStatus = tierName === 'nightly' || tierName === 'nightlyfailures';
+  const syncStatus = tierName === 'nightly';
   const buckets = [
     ...(tierData.sections || []),
     ...(tierData.allJobsSection ? [tierData.allJobsSection] : []),
@@ -314,13 +314,23 @@ function renderHeaderDate(elId, tierName, tierData) {
 
 function getWeatherFromHistory(weatherHistory) {
   if (!weatherHistory) return [];
-  return weatherHistory.map(h => h.status);
+  return weatherHistory.map(h => getDisplayStatus(h));
+}
+
+function getDisplayStatus(item) {
+  if (!item) return 'none';
+  if (item.status === 'passed' && (item.retriedAndPassed || item.retriedSetupAndPassed)) return 'flaky';
+  return item.status;
+}
+
+function isPassedLikeStatus(status) {
+  return status === 'passed' || status === 'flaky';
 }
 
 function getWeatherEmoji(weatherHistory) {
   if (!weatherHistory || weatherHistory.length === 0) return '❓';
   const weather = getWeatherFromHistory(weatherHistory);
-  const passedCount = weather.filter(w => w === 'passed').length;
+  const passedCount = weather.filter(isPassedLikeStatus).length;
   const percentage = (passedCount / weather.length) * 100;
   
   if (percentage === 100) return '☀️';
@@ -333,13 +343,18 @@ function getWeatherEmoji(weatherHistory) {
 function getWeatherPercentage(weatherHistory) {
   if (!weatherHistory || weatherHistory.length === 0) return 0;
   const weather = getWeatherFromHistory(weatherHistory);
-  const passedCount = weather.filter(w => w === 'passed').length;
-  return Math.round((passedCount / weather.length) * 100);
+  const score = weather.reduce((sum, status) => {
+    if (status === 'passed') return sum + 1;
+    if (status === 'flaky') return sum + 0.7;
+    return sum;
+  }, 0);
+  return Math.round((score / weather.length) * 100);
 }
 
 function getSectionStats(tests) {
   const failed = tests.filter(t => t.status === 'failed').length;
-  const passed = tests.filter(t => t.status === 'passed').length;
+  const flaky = tests.filter(t => getDisplayStatus(t) === 'flaky').length;
+  const passed = tests.filter(t => t.status === 'passed' && getDisplayStatus(t) !== 'flaky').length;
   const missing = tests.filter(t => t.status === 'not_run').length;
   const running = tests.filter(t => t.status === 'running').length;
   
@@ -354,7 +369,7 @@ function getSectionStats(tests) {
   const weatherPercent = getWeatherPercentage(allWeather);
   const weatherEmoji = getWeatherEmoji(allWeather);
   
-  return { failed, passed, missing, running, notRun: missing, total: tests.length, totalFailureDays, weatherPercent, weatherEmoji };
+  return { failed, flaky, passed, missing, running, notRun: missing, total: tests.length, totalFailureDays, weatherPercent, weatherEmoji };
 }
 
 function getTotalStats() {
@@ -386,7 +401,8 @@ function getTotalStats() {
   return {
     total: filteredTests.length,
     failed: filteredTests.filter(t => t.status === 'failed').length,
-    passed: filteredTests.filter(t => t.status === 'passed').length,
+    flaky: filteredTests.filter(t => getDisplayStatus(t) === 'flaky').length,
+    passed: filteredTests.filter(t => t.status === 'passed' && getDisplayStatus(t) !== 'flaky').length,
     notRun: filteredTests.filter(t => t.status === 'not_run').length,
     failureDays: failureDays
   };
@@ -445,7 +461,7 @@ function filterTests(tests) {
   
   // Filter by status (simple match on current status).
   if (state.filter !== 'all') {
-    filtered = filtered.filter(t => t.status === state.filter);
+    filtered = filtered.filter(t => state.filter === 'flaky' ? getDisplayStatus(t) === 'flaky' : t.status === state.filter);
   }
   
   // Filter by search query - match against display name AND full job name
@@ -519,11 +535,16 @@ function sortTests(tests, sortBy = state.sortBy) {
       break;
       
     case 'status':
-      // Failed first, then not_run, then passed
-      const statusOrder = { 'failed': 0, 'not_run': 1, 'running': 2, 'passed': 3 };
+      // Failed first, then final-green retry recoveries, then not_run/running,
+      // then ordinary passed rows.
+      const statusOrder = { 'failed': 0, 'not_run': 2, 'running': 3, 'passed': 4 };
       sorted.sort((a, b) => {
-        const aOrder = statusOrder[a.status] ?? 4;
-        const bOrder = statusOrder[b.status] ?? 4;
+        const aOrder = a.status === 'passed' && (a.retriedAndPassed || a.retriedSetupAndPassed)
+          ? 1
+          : statusOrder[a.status] ?? 5;
+        const bOrder = b.status === 'passed' && (b.retriedAndPassed || b.retriedSetupAndPassed)
+          ? 1
+          : statusOrder[b.status] ?? 5;
         if (aOrder === bOrder) {
           // Secondary sort by failure count
           return getFailureCount(b) - getFailureCount(a);
@@ -555,7 +576,7 @@ function getPassRate(test) {
   if (!test.weatherHistory || test.weatherHistory.length === 0) return 100;
   const total = test.weatherHistory.filter(w => w.status !== 'none').length;
   if (total === 0) return 100;
-  const passed = test.weatherHistory.filter(w => w.status === 'passed').length;
+  const passed = test.weatherHistory.filter(w => isPassedLikeStatus(getDisplayStatus(w))).length;
   return (passed / total) * 100;
 }
 
@@ -673,6 +694,8 @@ function renderError() {
   document.getElementById('total-tests').textContent = '0';
   document.getElementById('failed-tests').textContent = '0';
   document.getElementById('not-run-tests').textContent = '0';
+  document.getElementById('running-tests').textContent = '0';
+  document.getElementById('flaky-tests').textContent = '0';
   document.getElementById('passed-tests').textContent = '0';
 }
 
@@ -889,6 +912,9 @@ function renderSections() {
     if (stats.running > 0) {
       statusBadges.push(`<span class="section-status has-running">(${stats.running} running)</span>`);
     }
+    if (stats.flaky > 0) {
+      statusBadges.push(`<span class="section-status has-flaky">(${stats.flaky} retry-pass)</span>`);
+    }
     if (statusBadges.length === 0 && stats.passed === stats.total) {
       statusBadges.push(`<span class="section-status all-green">All Green</span>`);
     }
@@ -972,7 +998,8 @@ function renderTestGroups(section, tests) {
   const failed = tests.filter(t => t.status === 'failed');
   const missing = tests.filter(t => t.status === 'not_run');
   const running = tests.filter(t => t.status === 'running');
-  const passed = tests.filter(t => t.status === 'passed');
+  const flakyPassed = tests.filter(t => t.status === 'passed' && (t.retriedAndPassed || t.retriedSetupAndPassed));
+  const passed = tests.filter(t => t.status === 'passed' && !(t.retriedAndPassed || t.retriedSetupAndPassed));
 
   let html = '';
 
@@ -981,6 +1008,13 @@ function renderTestGroups(section, tests) {
     const groupId = `${section.id}-failed`;
     const isExpanded = state.expandedGroups.has(groupId) || state.filter === 'failed';
     html += renderTestGroup(section, failed, groupId, 'FAILED', 'failed', isExpanded);
+  }
+
+  // Passed only after one or more retry attempts.
+  if (flakyPassed.length > 0) {
+    const groupId = `${section.id}-flaky`;
+    const isExpanded = state.expandedGroups.has(groupId);
+    html += renderTestGroup(section, flakyPassed, groupId, 'PASSED AFTER RETRY', 'flaky', isExpanded);
   }
 
   // Missing (no job created / cancelled / skipped)
@@ -1047,15 +1081,17 @@ function renderTestRow(sectionId, test) {
     : '<span class="weather-dot none"></span>'.repeat(10);
   
   const weatherEmoji = getWeatherEmoji(test.weatherHistory);
-  const passedCount = weather.filter(w => w === 'passed').length;
+  const passedCount = weather.filter(isPassedLikeStatus).length;
   const failedCount = weather.filter(w => w === 'failed').length;
   
   const statusDisplay = {
     'passed': '● Passed',
+    'flaky': '● Passed after retry',
     'failed': '○ Failed',
     'not_run': '⊘ Missing',
     'running': '◌ Running'
   };
+  const rowStatus = getDisplayStatus(test);
   
   // Check if there are failing tests to show
   const hasFailingTests = test.failedTestsInWeather && test.failedTestsInWeather.length > 0;
@@ -1079,13 +1115,13 @@ function renderTestRow(sectionId, test) {
     : '<span class="no-maintainer">—</span>';
   
   return `
-    <div class="test-row ${test.status}">
+    <div class="test-row ${rowStatus}">
       <div class="test-platform-col">
         ${(() => { const p = getPlatformLabel(test); return p ? p : '<span class="platform-empty">—</span>'; })()}
       </div>
       <div class="test-name-col">
         <div class="test-name">
-          <span class="test-status-dot ${test.status}"></span>
+          <span class="test-status-dot ${rowStatus}"></span>
           <span class="test-name-text" ${test.error ? `data-test-id="${test.id}" data-section-id="${sectionId}" style="cursor:pointer"` : ''}>${test.name}</span>
           ${test.isRequired ? '<span class="required-badge">required</span>' : ''}
           ${failureInfo.length > 0 ? `
@@ -1096,7 +1132,7 @@ function renderTestRow(sectionId, test) {
         </div>
       </div>
       <div class="test-run-col">
-        <span class="test-run-status ${test.status}">${statusDisplay[test.status] || test.status}</span>
+        <span class="test-run-status ${rowStatus}">${statusDisplay[rowStatus] || statusDisplay[test.status] || test.status}</span>
         <span class="test-run-duration">${test.duration || 'N/A'}</span>
       </div>
       <div class="test-time-col">
@@ -1114,7 +1150,9 @@ function renderTestRow(sectionId, test) {
         </div>
       </div>
       <div class="test-retried-col">
-        ${test.retried || 0}
+        <span class="retry-count">${test.retried || 0}</span>
+        ${test.retriedAndPassed ? '<span class="retry-flaky" title="First attempt failed, later attempt passed">flaky</span>' : ''}
+        ${test.retriedSetupAndPassed ? '<span class="retry-flaky setup" title="First attempt failed during setup, later attempt passed">setup</span>' : ''}
         ${test.setupRetry ? '<span class="setup-retry">⚙️ (setup)</span>' : ''}
       </div>
     </div>
@@ -1130,7 +1168,8 @@ function updateStats() {
   }
 
   const failedCount = viewTests.filter(t => t.status === 'failed').length;
-  const passedCount = viewTests.filter(t => t.status === 'passed').length;
+  const flakyCount = viewTests.filter(t => getDisplayStatus(t) === 'flaky').length;
+  const passedCount = viewTests.filter(t => t.status === 'passed' && getDisplayStatus(t) !== 'flaky').length;
   const notRunCount = viewTests.filter(t => t.status === 'not_run').length;
   const runningCount = viewTests.filter(t => t.status === 'running').length;
 
@@ -1138,11 +1177,13 @@ function updateStats() {
   document.getElementById('failed-tests').textContent = failedCount;
   document.getElementById('not-run-tests').textContent = notRunCount;
   document.getElementById('running-tests').textContent = runningCount;
+  document.getElementById('flaky-tests').textContent = flakyCount;
   document.getElementById('passed-tests').textContent = passedCount;
 
   document.getElementById('filter-failed-count').textContent = failedCount;
   document.getElementById('filter-not-run-count').textContent = notRunCount;
   document.getElementById('filter-running-count').textContent = runningCount;
+  document.getElementById('filter-flaky-count').textContent = flakyCount;
   document.getElementById('filter-passed-count').textContent = passedCount;
 }
 
@@ -1194,8 +1235,9 @@ function toggleGroup(groupId) {
 }
 
 function setFilter(filter) {
+  if (!filter) return;
   state.filter = filter;
-  document.querySelectorAll('.filter-btn').forEach(btn => {
+  document.querySelectorAll('.filter-btn[data-filter]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.filter === filter);
   });
   renderSections();
@@ -1303,7 +1345,7 @@ function showWeatherModal(sectionId, testId) {
   
   const weather = getWeatherFromHistory(test.weatherHistory);
   const weatherEmoji = getWeatherEmoji(test.weatherHistory);
-  const passedCount = weather.filter(w => w === 'passed').length;
+  const passedCount = weather.filter(isPassedLikeStatus).length;
   const failedCount = weather.filter(w => w === 'failed').length;
   
   const flatTier = document.body.classList.contains('flat-list-tier');
@@ -1336,25 +1378,51 @@ function showWeatherModal(sectionId, testId) {
       }
     });
     const failureCount = uniqueDayFailures.length;
+    const displayStatus = getDisplayStatus(day);
+    const statusLabel = {
+      passed: '● Passed',
+      flaky: '● Passed after retry',
+      failed: '○ Failed',
+      not_run: '— No run',
+      none: '— No run',
+      running: '◌ Running'
+    }[displayStatus] || displayStatus;
     
     const messageText = day.status === 'passed' 
       ? `Completed in ${day.duration || 'N/A'}` 
       : day.status === 'failed' 
         ? (day.failureStep ? `Failed step: ${day.failureStep}` : null)
         : 'No run recorded';
+    const retryText = day.retried
+      ? `${day.retried} ${day.retried === 1 ? 'retry' : 'retries'}${day.retriedAndPassed ? ' · failed first, later passed' : ''}${day.retriedSetupAndPassed ? ' · setup failed first, later passed' : ''}`
+      : '';
+    const attemptLinks = (day.attempts || [])
+      .filter(attempt => attempt.runId && attempt.jobId)
+      .map(attempt => {
+        const attemptStatus = getDisplayStatus(attempt);
+        const detail = attempt.failureStep ? ` · ${attempt.failureStep}` : ` · ${attempt.duration || 'N/A'}`;
+        return `
+          <a href="https://github.com/${sourceRepo}/actions/runs/${attempt.runId}/job/${attempt.jobId}"
+             target="_blank"
+             class="weather-attempt-link ${attemptStatus}">
+            Attempt ${attempt.attempt}: ${attemptStatus === 'passed' ? 'passed' : attemptStatus}${detail}
+          </a>
+        `;
+      }).join('');
     
     return `
-      <div class="weather-day-row ${day.status}">
+      <div class="weather-day-row ${displayStatus}">
         <div class="weather-day-date">
           ${formatted}
           <span class="day-name">${dayName}${isToday ? ' (Today)' : ''}</span>
         </div>
-        <div class="weather-day-status ${day.status}">
-          ${day.status === 'passed' ? '● Passed' : day.status === 'failed' ? '○ Failed' : '— No run'}
+        <div class="weather-day-status ${displayStatus}">
+          ${statusLabel}
         </div>
         ${messageText ? `
         <div class="weather-day-message ${day.status === 'failed' ? 'failure-note' : ''}">
             ${messageText}
+            ${retryText ? `<span class="weather-retry-note">${retryText}</span>` : ''}
         </div>
         ` : ''}
         ${day.runId ? `
@@ -1365,6 +1433,7 @@ function showWeatherModal(sectionId, testId) {
           </a>
         ` : ''}
       </div>
+      ${attemptLinks ? `<div class="weather-attempts">${attemptLinks}</div>` : ''}
       ${day.status === 'failed' && failureCount > 0 ? `
         <div class="weather-day-failures">
           <div class="day-failures-header">Failed tests (${failureCount}):</div>
@@ -1772,16 +1841,9 @@ function switchTab(tabName) {
     tab.classList.toggle('active', tab.dataset.tab === tabName);
   });
 
-  // Toggle visibility of the two content panels (grid view vs nightly-failures).
+  // Toggle visibility of the main content panel.
   const grid = document.getElementById('nightly-content');
-  const nf   = document.getElementById('nightlyfailures-content');
-  if (grid) grid.classList.toggle('active', tabName !== 'nightlyfailures');
-  if (nf)   nf.classList.toggle('active', tabName === 'nightlyfailures');
-
-  if (tabName === 'nightlyfailures') {
-    renderNightlyFailures();
-    return;
-  }
+  if (grid) grid.classList.add('active');
 
   // Platform pills only make sense on the Nightly tab.
   const pillsRow = document.querySelector('.category-filters');
@@ -1802,107 +1864,6 @@ function switchTab(tabName) {
   updateJobCount();
 }
 
-// ============================================
-// Nightly Failures (aggregate sub-test failures across the nightly window)
-// ============================================
-function renderNightlyFailures() {
-  const list = document.getElementById('nightly-failures-list');
-  if (!list) return;
-  const data = state.tiersData?.nightly;
-  if (!data) {
-    list.innerHTML = '<p class="empty-message">No nightly data available.</p>';
-    return;
-  }
-  const tests = data.allJobsSection?.tests || data.sections?.flatMap(s => s.tests) || [];
-
-  // Group by job test-name (the part after the platform), so e.g.
-  // "Metal-QEMU-SNP / badaml-vuln (with debug shell)" → key "badaml-vuln (with debug shell)".
-  const byJob = new Map();
-  tests.forEach(job => {
-    const fullName = job.jobName || job.fullName || job.name || '';
-    const parts = fullName.split(' / ');
-    const platform = parts[0] || 'unknown';
-    const testName = parts.slice(1).join(' / ') || fullName;
-
-    const failureDates = new Set();
-    (job.weatherHistory || []).forEach(d => {
-      if (d.status === 'failed') failureDates.add((d.date || '').split('T')[0]);
-    });
-    if (failureDates.size === 0 && (job.failedTestsInWeather || []).length === 0) return;
-
-    let entry = byJob.get(testName);
-    if (!entry) {
-      entry = { testName, platforms: new Map(), subtests: new Set(), totalFailureDays: 0 };
-      byJob.set(testName, entry);
-    }
-    const plat = entry.platforms.get(platform) || { dates: new Set(), subtests: new Map() };
-    failureDates.forEach(d => plat.dates.add(d));
-    (job.failedTestsInWeather || []).forEach(ft => {
-      entry.subtests.add(ft.name);
-      const cur = plat.subtests.get(ft.name) || { count: 0, dates: new Set() };
-      cur.count += ft.count || 1;
-      (ft.dates || []).forEach(d => cur.dates.add(d));
-      plat.subtests.set(ft.name, cur);
-    });
-    entry.platforms.set(platform, plat);
-  });
-
-  const rows = Array.from(byJob.values()).map(e => {
-    const platforms = Array.from(e.platforms.entries()).map(([p, v]) => ({
-      platform: p,
-      dates: Array.from(v.dates).sort().reverse(),
-      subtests: Array.from(v.subtests.entries()).map(([n, s]) => ({
-        name: n, count: s.count, dates: Array.from(s.dates).sort().reverse(),
-      })).sort((a, b) => b.count - a.count),
-    })).sort((a, b) => b.dates.length - a.dates.length);
-    const totalFailureDays = platforms.reduce((s, p) => s + p.dates.length, 0);
-    return { testName: e.testName, subtests: Array.from(e.subtests), platforms, totalFailureDays };
-  }).sort((a, b) => b.totalFailureDays - a.totalFailureDays);
-
-  document.getElementById('nf-tests').textContent = rows.length;
-  document.getElementById('nf-occurrences').textContent = rows.reduce((s, r) => s + r.totalFailureDays, 0);
-  document.getElementById('nf-jobs').textContent = rows.reduce((s, r) => s + r.platforms.length, 0);
-
-  if (rows.length === 0) {
-    list.innerHTML = '<p class="empty-message">No nightly failures in the window. 🎉</p>';
-    return;
-  }
-
-  const q = (state.nightlyFailureQuery || '').toLowerCase();
-  const matches = r => !q
-    || r.testName.toLowerCase().includes(q)
-    || r.platforms.some(p => p.platform.toLowerCase().includes(q))
-    || r.subtests.some(n => n.toLowerCase().includes(q));
-  const visible = rows.filter(matches);
-
-  list.innerHTML = visible.map(r => `
-    <div class="flaky-item" data-toggle-expand>
-      <div class="flaky-item-header">
-        <div class="flaky-item-info">
-          <div class="flaky-item-name">${escapeHtml(r.testName)}</div>
-          <div class="flaky-item-file">${r.platforms.length} platform${r.platforms.length > 1 ? 's' : ''} affected</div>
-        </div>
-        <span class="flaky-item-badge">${r.totalFailureDays} failure-day${r.totalFailureDays > 1 ? 's' : ''}</span>
-      </div>
-      <div class="flaky-item-body" style="padding: 0 16px 12px 16px;">
-        ${r.platforms.map(p => `
-          <div style="padding: 6px 0; border-top: 1px solid var(--border-subtle, #21262d);">
-            <div style="display:flex; gap:10px; align-items:center; font-size:13px;">
-              <span class="required-badge" style="background:#30363d; color:#c9d1d9;">${escapeHtml(p.platform)}</span>
-              <span style="color:var(--text-muted);">${p.dates.length} failed day${p.dates.length > 1 ? 's' : ''}</span>
-              <span style="color:var(--text-muted); font-family: var(--font-mono); font-size:11px;">${p.dates.slice(0, 4).join(', ')}</span>
-            </div>
-            ${p.subtests.length ? `<div style="margin: 4px 0 0 8px; font-size:12px; color:var(--text-muted);">
-              ${p.subtests.slice(0, 6).map(s => `<div>• ${escapeHtml(s.name)} (${s.count}×)</div>`).join('')}
-            </div>` : ''}
-          </div>
-        `).join('')}
-      </div>
-    </div>
-  `).join('');
-}
-
-// ============================================
 // Flaky Tests Rendering
 // ============================================
 
@@ -2441,7 +2402,7 @@ function init() {
   });
   
   // Filter buttons (status) - Kata
-  document.querySelectorAll('.filter-btn:not(.coco-filter)').forEach(btn => {
+  document.querySelectorAll('.filter-btn[data-filter]:not(.coco-filter):not(.caa-filter)').forEach(btn => {
     btn.addEventListener('click', () => setFilter(btn.dataset.filter));
   });
   
@@ -2475,17 +2436,6 @@ function init() {
     state.searchQuery = e.target.value;
     renderSections();
     updateJobCount();
-  });
-  const nfSearch = document.getElementById('search-nightly-failures');
-  if (nfSearch) nfSearch.addEventListener('input', (e) => {
-    state.nightlyFailureQuery = e.target.value;
-    renderNightlyFailures();
-  });
-  // Nightly Failures rows: toggle expanded on header click.
-  document.addEventListener('click', (e) => {
-    const header = e.target.closest('#nightly-failures-list .flaky-item-header');
-    if (!header) return;
-    header.parentElement.classList.toggle('expanded');
   });
   // In flat-list-tier mode (Scheduled/Release) the weather column is hidden,
   // so make the row's test-name a click target for the history modal.
