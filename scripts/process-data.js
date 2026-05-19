@@ -394,7 +394,7 @@ function getJobCategories(jobName) {
 function getAllUniqueJobNames() {
   const jobNames = new Set();
   allJobs.forEach(job => {
-    if (job.name) {
+    if (job.name && job.conclusion !== 'skipped') {
       jobNames.add(job.name);
     }
   });
@@ -467,6 +467,146 @@ if (fatalStepPatterns.length === 0) {
 }
 console.log('Fatal step patterns:', fatalStepPatterns.map(r => r.toString()));
 
+function jobSortTime(job) {
+  return new Date(job?.started_at || job?.created_at || 0).getTime();
+}
+
+function displayStatus(rawStatus) {
+  return rawStatus === 'not_run_setup_failed' ? 'not_run' : rawStatus;
+}
+
+function runAnchorTime(job) {
+  return new Date(job?.created_at || job?.started_at || 0).getTime();
+}
+
+function getDataAnchorDate() {
+  const firstAvailableByRunAndJob = new Map();
+  for (const job of allJobs) {
+    const runId = job.workflow_run_id || job.run_id?.toString();
+    if (!runId || !job.name) continue;
+    const key = `${runId}\n${job.name}`;
+    const current = firstAvailableByRunAndJob.get(key);
+    if (!current) {
+      firstAvailableByRunAndJob.set(key, job);
+      continue;
+    }
+
+    const attemptDiff = (job.run_attempt || 1) - (current.run_attempt || 1);
+    if (attemptDiff < 0 || (attemptDiff === 0 && runAnchorTime(job) < runAnchorTime(current))) {
+      firstAvailableByRunAndJob.set(key, job);
+    }
+  }
+
+  const firstAttemptTimes = Array.from(firstAvailableByRunAndJob.values())
+    .map(runAnchorTime)
+    .filter(Number.isFinite);
+
+  if (firstAttemptTimes.length === 0) return new Date();
+  return new Date(Math.max(...firstAttemptTimes));
+}
+
+const dataAnchorDate = getDataAnchorDate();
+
+function groupJobsByRun(jobs) {
+  const jobsByRun = {};
+  for (const job of jobs) {
+    const runId = job.workflow_run_id || job.run_id?.toString();
+    if (!runId) continue;
+    if (!jobsByRun[runId]) jobsByRun[runId] = [];
+    jobsByRun[runId].push(job);
+  }
+  return jobsByRun;
+}
+
+function sortedRunAttempts(jobs) {
+  return [...(jobs || [])].sort((a, b) => {
+    const attemptDiff = (a.run_attempt || 1) - (b.run_attempt || 1);
+    return attemptDiff || jobSortTime(a) - jobSortTime(b);
+  });
+}
+
+function getFirstAttemptJob(jobsByRun, runId) {
+  return sortedRunAttempts(jobsByRun[runId])[0] || null;
+}
+
+function getLatestAttemptJob(jobsByRun, runId) {
+  return sortedRunAttempts(jobsByRun[runId]).at(-1) || null;
+}
+
+function getRetryCount(jobsByRun, runId) {
+  const attempts = sortedRunAttempts(jobsByRun[runId]).map(j => j.run_attempt || 1);
+  return attempts.length > 0 ? Math.max(...attempts) - 1 : 0;
+}
+
+function getRunRecords(jobsByRun) {
+  return Object.keys(jobsByRun).map(runId => {
+    const attempts = sortedRunAttempts(jobsByRun[runId]);
+    const firstAttempt = getFirstAttemptJob(jobsByRun, runId);
+    const latestAttempt = getLatestAttemptJob(jobsByRun, runId);
+    const firstStatus = determineJobStatus(firstAttempt);
+    const latestStatus = determineJobStatus(latestAttempt);
+    return {
+      runId,
+      firstAttempt,
+      latestAttempt,
+      attempts,
+      firstStatus,
+      latestStatus,
+      retryCount: getRetryCount(jobsByRun, runId),
+      retriedAndPassed:
+        !!latestAttempt &&
+        (latestAttempt.run_attempt || 1) > 1 &&
+        firstStatus === 'failed' &&
+        latestStatus === 'passed',
+      retriedSetupAndPassed:
+        !!latestAttempt &&
+        (latestAttempt.run_attempt || 1) > 1 &&
+        firstStatus === 'not_run_setup_failed' &&
+        latestStatus === 'passed'
+    };
+  }).filter(r => r.firstAttempt)
+    .sort((a, b) => jobSortTime(b.firstAttempt) - jobSortTime(a.firstAttempt));
+}
+
+function determineJobStatus(job) {
+  if (!job) return 'not_run';
+
+  if (job.status === 'in_progress' || job.status === 'queued') {
+    return 'running';
+  }
+
+  if (job.conclusion === 'success') {
+    return 'passed';
+  }
+
+  if (job.conclusion === 'failure') {
+    const hasFatalStep = job.steps?.some(s =>
+      fatalStepPatterns.some(p => p.test(s.name))
+    );
+
+    if (hasFatalStep) {
+      const failedStep = job.steps?.find(s => s.conclusion === 'failure');
+      const failedStepName = failedStep?.name || 'Unknown step';
+
+      if (failedStep) {
+        const isFatal = fatalStepPatterns.some(p => p.test(failedStepName));
+        if (!isFatal) {
+          console.log(`  [Non-fatal failure] Job ${job.id} failed at "${failedStepName}" -> marked as not_run`);
+          return 'not_run_setup_failed';
+        }
+      }
+    }
+
+    return 'failed';
+  }
+
+  if (job.conclusion === 'cancelled' || job.conclusion === 'skipped') {
+    return 'not_run';
+  }
+
+  return 'not_run';
+}
+
 // Process sections based on config
 const sections = (config.sections || []).map(sectionConfig => {
   const sectionJobs = sectionConfig.jobs || [];
@@ -492,63 +632,25 @@ const sections = (config.sections || []).map(sectionConfig => {
     
     
     console.log(`Job "${displayName}": found ${matchingJobs.length} matching jobs`);
-    
-    // Helper to determine status based on fatal steps
-    const determineStatus = (job) => {
-      if (!job) return 'not_run';
-      
-      if (job.status === 'in_progress' || job.status === 'queued') {
-        return 'running';
-      }
-      
-      if (job.conclusion === 'success') {
-        return 'passed';
-      }
-      
-      if (job.conclusion === 'failure') {
-        // Check if this job has any "fatal steps" (like "Run tests")
-        // If it does, only count failures in those steps (setup failures = not_run)
-        // If it doesn't (e.g., build jobs), any failure counts as failed
-        const hasFatalStep = job.steps?.some(s => 
-          fatalStepPatterns.some(p => p.test(s.name))
-        );
-        
-        if (hasFatalStep) {
-          // This is a test job - only count failures in fatal steps
-          const failedStep = job.steps?.find(s => s.conclusion === 'failure');
-          const failedStepName = failedStep?.name || 'Unknown step';
-          
-          if (failedStep) {
-            const isFatal = fatalStepPatterns.some(p => p.test(failedStepName));
-            if (!isFatal) {
-              console.log(`  [Non-fatal failure] Job ${job.id} failed at "${failedStepName}" -> marked as not_run`);
-              return 'not_run_setup_failed'; // Internal status, maps to 'not_run'
-            }
-          }
-        }
-        // Either no fatal steps (build job) or failed in a fatal step
-        return 'failed';
-      }
-      
-      if (job.conclusion === 'cancelled' || job.conclusion === 'skipped') {
-        return 'not_run';
-      }
-      
-      return 'not_run';
-    };
-
-    // Get latest job
-    const latestJob = matchingJobs[0];
-    let rawStatus = determineStatus(latestJob);
-    let status = rawStatus === 'not_run_setup_failed' ? 'not_run' : rawStatus;
+    const jobsByRun = groupJobsByRun(matchingJobs);
+    const runRecords = getRunRecords(jobsByRun);
+    const latestRun = runRecords[0] || null;
+    const firstAttemptJob = latestRun?.firstAttempt || null;
+    const latestJob = latestRun?.latestAttempt || null;
+    const latestAttemptJob = latestRun?.latestAttempt || null;
+    const retryCount = latestRun?.retryCount || 0;
+    const retriedAndPassed = latestRun?.retriedAndPassed || false;
+    let rawStatus = determineJobStatus(latestJob);
+    let status = displayStatus(rawStatus);
     let setupRetry = rawStatus === 'not_run_setup_failed'; // Mark if it was a setup failure
     
     // Get cached weather for this test
     const cachedWeather = getCachedWeatherHistory(sectionConfig.id, testId);
     
-    // Anchor date is always today - we always show the last 10 days including today
-    // If today's run hasn't completed, it will show as 'not_run' or 'running'
-    let anchorDate = new Date();
+    // Anchor the generated window to the latest real first-attempt run day.
+    // Browser-side normalization pads only after the nightly availability
+    // buffer has elapsed, so local output does not grow a premature empty day.
+    let anchorDate = dataAnchorDate;
     
     // Build weather history (last 10 days from anchor)
     const weatherHistory = [];
@@ -557,24 +659,21 @@ const sections = (config.sections || []).map(sectionConfig => {
       date.setUTCDate(date.getUTCDate() - (9 - i));
       const dateKey = utcDayKey(date);
 
-      // Find job for this day - only use jobs that have the "Run tests" step
-      const dayJobs = matchingJobs.filter(job => {
-        // Bucket by created_at (queue time): cron-fired jobs all carry the
-        // cron's UTC day even if a slow runner pushes started_at past midnight.
-        return utcDayKey(job.created_at || job.started_at) === dateKey;
-      });
-      
-      // Pick the first job that has a "Run tests" step, otherwise null (not run)
-      const dayJob = dayJobs.find(job => {
-        return job.steps?.some(s => fatalStepPatterns.some(p => p.test(s.name)));
+      // Bucket by the first attempt's queue time: rerun attempts can be
+      // created hours later, but the weather slot belongs to the cron day.
+      const dayRun = runRecords.find(run => {
+        return utcDayKey(run.firstAttempt.created_at || run.firstAttempt.started_at) === dateKey;
       }) || null;
+      const dayJob = dayRun?.latestAttempt || null;
+      const dayFirstAttemptJob = dayRun?.firstAttempt || null;
+      const dayRetryCount = dayRun?.retryCount || 0;
       
       let dayStatus = 'none';
       let dayFailures = null;
       let dayStepName = null;
       
       if (dayJob) {
-        const dayRawStatus = determineStatus(dayJob);
+        const dayRawStatus = determineJobStatus(dayJob);
         
         if (dayRawStatus === 'passed') {
           dayStatus = 'passed';
@@ -617,8 +716,8 @@ const sections = (config.sections || []).map(sectionConfig => {
                 f.name,
                 date.toISOString(),
                 displayName,
-                dayJob.id.toString(),
-                dayJob.workflow_run_id || dayJob.run_id?.toString()
+                (dayFirstAttemptJob || dayJob).id.toString(),
+                (dayFirstAttemptJob || dayJob).workflow_run_id || (dayFirstAttemptJob || dayJob).run_id?.toString()
               );
             });
           }
@@ -660,8 +759,20 @@ const sections = (config.sections || []).map(sectionConfig => {
       weatherHistory.push({
         date: date.toISOString(),
         status: dayStatus,
+        retried: dayRetryCount,
+        retriedAndPassed: dayRun?.retriedAndPassed || false,
+        retriedSetupAndPassed: dayRun?.retriedSetupAndPassed || false,
         runId: dayJob?.workflow_run_id || dayJob?.run_id?.toString() || null,
         jobId: dayJob?.id?.toString() || null,
+        firstAttemptJobId: dayFirstAttemptJob?.id?.toString() || null,
+        attempts: dayRun?.attempts?.map(attempt => ({
+          attempt: attempt.run_attempt || 1,
+          status: displayStatus(determineJobStatus(attempt)),
+          runId: attempt.workflow_run_id || attempt.run_id?.toString() || null,
+          jobId: attempt.id?.toString() || null,
+          duration: formatDuration(attempt.started_at, attempt.completed_at),
+          failureStep: determineJobStatus(attempt) === 'failed' ? getFailedStep(attempt) : null
+        })) || [],
         duration: dayJob ? formatDuration(dayJob.started_at, dayJob.completed_at) : null,
         failureStep: failureStepDisplay,
         failureDetails: dayFailures
@@ -735,9 +846,11 @@ const sections = (config.sections || []).map(sectionConfig => {
     // Sort by count descending
     failedTestsInWeather.sort((a, b) => b.count - a.count);
     
-    // Find last failure and success
-    const lastFailureJob = matchingJobs.find(j => j.conclusion === 'failure');
-    const lastSuccessJob = matchingJobs.find(j => j.conclusion === 'success');
+    // Find historical instability from first attempts, but final green runs
+    // still count as successful for the main dashboard status.
+    const firstAttemptJobs = runRecords.map(r => r.firstAttempt);
+    const lastFailureJob = firstAttemptJobs.find(j => determineJobStatus(j) === 'failed');
+    const lastSuccessJob = runRecords.map(r => r.latestAttempt).find(j => determineJobStatus(j) === 'passed');
     
     // Get failure details for the latest failed job
     let errorDetails = null;
@@ -798,7 +911,11 @@ const sections = (config.sections || []).map(sectionConfig => {
       weatherHistory: weatherHistory,
       failureCount: failureCount,
       failedTestsInWeather: failedTestsInWeather, // NEW: specific "not ok" tests and their frequency
-      retried: latestJob?.run_attempt > 1 ? latestJob.run_attempt - 1 : 0,
+      retried: retryCount,
+      retriedAndPassed: retriedAndPassed,
+      retriedSetupAndPassed: latestRun?.retriedSetupAndPassed || false,
+      latestAttemptJobId: latestAttemptJob?.id?.toString() || null,
+      firstAttemptJobId: firstAttemptJob?.id?.toString() || null,
       setupRetry: false,
       runId: latestJob?.workflow_run_id || latestJob?.run_id?.toString() || null,
       jobId: latestJob?.id?.toString() || null,
@@ -895,130 +1012,56 @@ const allJobsSection = {
     }
     
     // Find jobs matching this name
-    const matchingJobs = allJobs.filter(job => job.name === jobName)
+    const matchingJobs = allJobs.filter(job => job.name === jobName && job.conclusion !== 'skipped')
       .sort((a, b) => new Date(b.started_at || b.created_at) - new Date(a.started_at || a.created_at));
     
-    // With filter=all, we get jobs from ALL attempts for each workflow run.
-    // Group by workflow_run_id to find the first attempt for each run.
-    const jobsByRun = {};
-    for (const job of matchingJobs) {
-      const runId = job.workflow_run_id;
-      if (!jobsByRun[runId]) {
-        jobsByRun[runId] = [];
-      }
-      jobsByRun[runId].push(job);
-    }
-    
-    // For each run, find the first attempt (run_attempt=1) - that's the real result
-    // A job that fails on attempt 1 but passes on retry is FLAKY
-    const getFirstAttemptJob = (runId) => {
-      const jobs = jobsByRun[runId] || [];
-      // Sort by run_attempt ascending to get first attempt
-      const sorted = [...jobs].sort((a, b) => (a.run_attempt || 1) - (b.run_attempt || 1));
-      return sorted[0] || null;
-    };
-    
-    const getLatestAttemptJob = (runId) => {
-      const jobs = jobsByRun[runId] || [];
-      // Sort by run_attempt descending to get latest attempt  
-      const sorted = [...jobs].sort((a, b) => (b.run_attempt || 1) - (a.run_attempt || 1));
-      return sorted[0] || null;
-    };
-    
-    // Get the most recent run's first attempt for current status
-    const mostRecentRunId = matchingJobs[0]?.workflow_run_id;
-    const firstAttemptJob = mostRecentRunId ? getFirstAttemptJob(mostRecentRunId) : null;
-    const latestAttemptJob = mostRecentRunId ? getLatestAttemptJob(mostRecentRunId) : null;
-    
-    // Use first attempt for status determination (shows real failures)
-    const latestJob = firstAttemptJob;
-    
-    // Check if there were retries that passed (flaky test indicator)
-    const hadRetries = latestAttemptJob && latestAttemptJob.run_attempt > 1;
-    const retriedAndPassed = hadRetries && 
-      firstAttemptJob?.conclusion === 'failure' && 
-      latestAttemptJob?.conclusion === 'success';
+    const jobsByRun = groupJobsByRun(matchingJobs);
+    const runRecords = getRunRecords(jobsByRun);
+    const latestRun = runRecords[0] || null;
+    const firstAttemptJob = latestRun?.firstAttempt || null;
+    const latestJob = latestRun?.latestAttempt || null;
+    const latestAttemptJob = latestRun?.latestAttempt || null;
+    const retryCount = latestRun?.retryCount || 0;
+    const retriedAndPassed = latestRun?.retriedAndPassed || false;
     
     let status = 'not_run';
     
     if (latestJob) {
-      if (latestJob.conclusion === 'success') {
+      const rawStatus = determineJobStatus(latestJob);
+      if (rawStatus === 'passed') {
         status = 'passed';
-      } else if (latestJob.conclusion === 'failure') {
-        // Check if this job has any "fatal steps" (like "Run tests")
-        // If it does, only count failures in those steps
-        // If it doesn't (e.g., build jobs), any failure counts
-        const hasFatalStep = latestJob.steps?.some(s => 
-          fatalStepPatterns.some(p => p.test(s.name))
-        );
-        
-        if (hasFatalStep) {
-          // This is a test job - only count failures in fatal steps
-          const failedStep = latestJob.steps?.find(s => s.conclusion === 'failure');
-          if (failedStep) {
-            const isFatal = fatalStepPatterns.some(p => p.test(failedStep.name));
-            status = isFatal ? 'failed' : 'not_run';
-          } else {
-            status = 'failed';
-          }
-        } else {
-          // This is a build/other job - any failure counts
-          status = 'failed';
-        }
-      } else if (latestJob.status === 'in_progress' || latestJob.status === 'queued') {
+      } else if (rawStatus === 'failed') {
+        status = 'failed';
+      } else if (rawStatus === 'running') {
         status = 'running';
+      } else {
+        status = 'not_run';
       }
     }
     
     // Build weather history (last 10 days)
     const weatherHistory = [];
-    const anchorDate = new Date();
+    const anchorDate = dataAnchorDate;
     for (let i = 0; i < 10; i++) {
       const date = utcStartOfDay(anchorDate);
       date.setUTCDate(date.getUTCDate() - (9 - i));
       const dateKey = utcDayKey(date);
 
-      const dayJobs = matchingJobs.filter(job => {
-        // Bucket by created_at (queue time): cron-fired jobs all carry the
-        // cron's UTC day even if a slow runner pushes started_at past midnight.
-        return utcDayKey(job.created_at || job.started_at) === dateKey;
-      });
-
-      // Group day's jobs by workflow_run_id
-      const dayJobsByRun = {};
-      for (const job of dayJobs) {
-        const runId = job.workflow_run_id;
-        if (!dayJobsByRun[runId]) {
-          dayJobsByRun[runId] = [];
-        }
-        dayJobsByRun[runId].push(job);
-      }
-      
-      // Get the most recent run for this day
-      const mostRecentDayJob = dayJobs[0];
-      const dayRunId = mostRecentDayJob?.workflow_run_id;
-      
-      // For this day's run, get the FIRST attempt (shows real result)
-      let dayJob = null;
-      let dayRetried = false;
-      
-      if (dayRunId && dayJobsByRun[dayRunId]) {
-        const runJobs = dayJobsByRun[dayRunId];
-        // Sort by run_attempt to get first and last
-        const sorted = [...runJobs].sort((a, b) => (a.run_attempt || 1) - (b.run_attempt || 1));
-        dayJob = sorted[0]; // First attempt
-        const lastAttempt = sorted[sorted.length - 1];
-        // Job was retried if there are multiple attempts
-        dayRetried = sorted.length > 1 || (lastAttempt?.run_attempt || 1) > 1;
-      }
+      const dayRun = runRecords.find(run => {
+        return utcDayKey(run.firstAttempt.created_at || run.firstAttempt.started_at) === dateKey;
+      }) || null;
+      const dayJob = dayRun?.latestAttempt || null;
+      const dayFirstAttemptJob = dayRun?.firstAttempt || null;
+      const dayRetryCount = dayRun?.retryCount || 0;
       
       let dayStatus = 'none';
       let failureStep = null;
       
       if (dayJob) {
-        if (dayJob.conclusion === 'success') {
+        const dayRawStatus = determineJobStatus(dayJob);
+        if (dayRawStatus === 'passed') {
           dayStatus = 'passed';
-        } else if (dayJob.conclusion === 'failure') {
+        } else if (dayRawStatus === 'failed') {
           dayStatus = 'failed';
           const failedStep = dayJob.steps?.find(s => s.conclusion === 'failure');
           if (failedStep) {
@@ -1036,17 +1079,29 @@ const allJobsSection = {
       weatherHistory.push({
         date: date.toISOString(),
         status: dayStatus,
-        retried: dayRetried,
+        retried: dayRetryCount,
+        retriedAndPassed: dayRun?.retriedAndPassed || false,
+        retriedSetupAndPassed: dayRun?.retriedSetupAndPassed || false,
         runId: dayJob?.workflow_run_id || dayJob?.run_id?.toString() || null,
         jobId: dayJob?.id?.toString() || null,
+        firstAttemptJobId: dayFirstAttemptJob?.id?.toString() || null,
+        attempts: dayRun?.attempts?.map(attempt => ({
+          attempt: attempt.run_attempt || 1,
+          status: displayStatus(determineJobStatus(attempt)),
+          runId: attempt.workflow_run_id || attempt.run_id?.toString() || null,
+          jobId: attempt.id?.toString() || null,
+          duration: formatDuration(attempt.started_at, attempt.completed_at),
+          failureStep: determineJobStatus(attempt) === 'failed' ? getFailedStep(attempt) : null
+        })) || [],
         duration: dayJob ? formatDuration(dayJob.started_at, dayJob.completed_at) : null,
         failureStep: failureStep
       });
     }
     
-    // Find last failure and success (from first attempts only)
-    const lastFailureJob = matchingJobs.find(j => j.conclusion === 'failure' && (j.run_attempt || 1) === 1);
-    const lastSuccessJob = matchingJobs.find(j => j.conclusion === 'success' && (j.run_attempt || 1) === 1);
+    // Find last first-attempt failure and last final-attempt success.
+    const firstAttemptJobs = runRecords.map(r => r.firstAttempt);
+    const lastFailureJob = firstAttemptJobs.find(j => determineJobStatus(j) === 'failed');
+    const lastSuccessJob = runRecords.map(r => r.latestAttempt).find(j => determineJobStatus(j) === 'passed');
 
     // Get error details if failed
     let errorDetails = null;
@@ -1078,10 +1133,13 @@ const allJobsSection = {
       lastSuccess: lastSuccessJob ? formatRelativeTime(lastSuccessJob.started_at) : 'Never',
       weatherHistory: weatherHistory,
       failureCount: weatherHistory.filter(w => w.status === 'failed').length,
-      retried: hadRetries, // True if there were workflow retries
+      retried: retryCount,
       retriedAndPassed: retriedAndPassed, // True if first attempt failed but retry passed (FLAKY!)
+      retriedSetupAndPassed: latestRun?.retriedSetupAndPassed || false,
+      latestAttemptJobId: latestAttemptJob?.id?.toString() || null,
+      firstAttemptJobId: firstAttemptJob?.id?.toString() || null,
       runId: latestJob?.workflow_run_id || latestJob?.run_id?.toString() || null,
-      jobId: latestJob?.id?.toString() || null, // Links to first attempt
+      jobId: latestJob?.id?.toString() || null,
       error: errorDetails,
       maintainers: maintainers
     };
@@ -1734,4 +1792,3 @@ function formatRelativeTime(dateString) {
     return date.toLocaleDateString();
   }
 }
-
