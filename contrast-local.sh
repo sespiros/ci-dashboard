@@ -25,6 +25,12 @@ REPO="edgelesssys/contrast"
 DAYS=14
 MAX_RUNS_PER_WORKFLOW=15
 MAX_LOGS_PER_TIER=40
+JOBS_PAGE_SIZE=50
+JOBS_FETCH_RETRIES=4
+RUNS_CACHE_DIR="${TMPDIR:-/tmp}/contrast-ci-dashboard-runs-$$"
+JOBS_CACHE_DIR="${TMPDIR:-/tmp}/contrast-ci-dashboard-jobs-$$"
+mkdir -p "$RUNS_CACHE_DIR" "$JOBS_CACHE_DIR"
+trap 'rm -rf "$RUNS_CACHE_DIR" "$JOBS_CACHE_DIR"' EXIT
 
 # tier => space-separated workflow filenames
 declare -A TIER_WORKFLOWS=(
@@ -84,11 +90,7 @@ fetch_tier() {
         else
             echo "  .. $wf"
         fi
-        if ! gh api \
-            -H "Accept: application/vnd.github+json" \
-            --paginate \
-            "repos/${REPO}/actions/workflows/${wf}/runs?created=>${SINCE}&per_page=50${branch_qs}" \
-            --jq '.workflow_runs' 2>/dev/null | jq -s 'add // []' > "runs-${tier}-${wf}.json"; then
+        if ! fetch_workflow_runs "$wf" "$branch_qs" > "runs-${tier}-${wf}.json"; then
             echo "     (workflow not found or no runs; skipping)"
             echo '[]' > "runs-${tier}-${wf}.json"
             continue
@@ -98,15 +100,9 @@ fetch_tier() {
         echo "     $n runs"
 
         for run_id in $(jq -r ".[0:${MAX_RUNS_PER_WORKFLOW}] | .[].id" "runs-${tier}-${wf}.json"); do
-            if ! gh api \
-                -H "Accept: application/vnd.github+json" \
-                --paginate \
-                "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100&filter=all" \
-                --jq '.jobs[]' 2>/dev/null | \
-                jq -s --arg run_id "$run_id" --arg wf "$wf" --arg tier "$tier" \
-                    '[.[] | . + {workflow_run_id: $run_id, source_workflow: $wf, tier: $tier}]' > run-jobs.json; then
-                echo "     (failed to fetch run $run_id; skipping)"
-                continue
+            if ! fetch_run_jobs "$run_id" "$wf" "$tier" > run-jobs.json; then
+                echo "     failed to fetch jobs for run $run_id; aborting to avoid publishing partial data" >&2
+                return 1
             fi
             jq -s 'add' "all-jobs-${tier}.json" run-jobs.json > temp-jobs.json
             mv temp-jobs.json "all-jobs-${tier}.json"
@@ -164,6 +160,81 @@ fetch_tier() {
             -o "$out"
     done
     echo "  $count log files fetched"
+}
+
+cache_key() {
+    printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+fetch_workflow_runs() {
+    local wf=$1
+    local branch_qs=$2
+    local key cache_file
+    key=$(cache_key "${wf}${branch_qs}")
+    cache_file="${RUNS_CACHE_DIR}/${key}.json"
+
+    if [ ! -s "$cache_file" ]; then
+        gh api \
+            -H "Accept: application/vnd.github+json" \
+            --paginate \
+            "repos/${REPO}/actions/workflows/${wf}/runs?created=>${SINCE}&per_page=50${branch_qs}" \
+            --jq '.workflow_runs' 2>/dev/null | jq -s 'add // []' > "$cache_file"
+    else
+        echo "     using cached runs for $wf" >&2
+    fi
+
+    cat "$cache_file"
+}
+
+fetch_run_jobs() {
+    local run_id=$1
+    local wf=$2
+    local tier=$3
+    local page=1
+    local combined="[]"
+    local cache_file="${JOBS_CACHE_DIR}/${run_id}.json"
+
+    if [ -s "$cache_file" ]; then
+        echo "     using cached jobs for run $run_id" >&2
+        jq --arg run_id "$run_id" --arg wf "$wf" --arg tier "$tier" \
+            '[.[] | . + {workflow_run_id: $run_id, source_workflow: $wf, tier: $tier}]' "$cache_file"
+        return
+    fi
+
+    while true; do
+        local response=""
+        local ok=0
+
+        for attempt in $(seq 1 "$JOBS_FETCH_RETRIES"); do
+            if response=$(gh api \
+                -H "Accept: application/vnd.github+json" \
+                "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=${JOBS_PAGE_SIZE}&page=${page}&filter=all"); then
+                ok=1
+                break
+            fi
+
+            echo "     run $run_id jobs page $page failed (attempt $attempt/${JOBS_FETCH_RETRIES}); retrying" >&2
+            sleep $((attempt * 2))
+        done
+
+        if [ "$ok" -ne 1 ]; then
+            return 1
+        fi
+
+        local page_jobs page_count
+        page_jobs=$(printf '%s' "$response" | jq '.jobs // empty') || return 1
+        page_count=$(printf '%s' "$page_jobs" | jq 'length') || return 1
+
+        combined=$(jq -s '.[0] + .[1]' <(printf '%s' "$combined") <(printf '%s' "$page_jobs")) || return 1
+
+        [ "$page_count" -lt "$JOBS_PAGE_SIZE" ] && break
+        page=$((page + 1))
+    done
+
+    printf '%s' "$combined" > "$cache_file"
+
+    jq --arg run_id "$run_id" --arg wf "$wf" --arg tier "$tier" \
+        '[.[] | . + {workflow_run_id: $run_id, source_workflow: $wf, tier: $tier}]' "$cache_file"
 }
 
 process_tier() {
