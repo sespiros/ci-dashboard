@@ -230,14 +230,33 @@ function syncStatusToLastDay(test) {
   }
 }
 
+function syncStatusToLatestRealDay(test) {
+  if (!test || !Array.isArray(test.weatherHistory) || test.weatherHistory.length === 0) return;
+  const latest = [...test.weatherHistory].reverse().find(day => {
+    return day && !day.synthetic && day.status && day.status !== 'none';
+  });
+  if (!latest) return;
+  const map = { passed: 'passed', failed: 'failed', running: 'running', not_run: 'not_run' };
+  const synced = map[latest.status];
+  if (!synced) return;
+  test.status = synced;
+  test.retried = latest.retried || test.retried || 0;
+  test.retriedAndPassed = latest.retriedAndPassed || false;
+  test.retriedSetupAndPassed = latest.retriedSetupAndPassed || false;
+  test.runId = latest.runId || test.runId || null;
+  test.jobId = latest.jobId || test.jobId || null;
+  test.latestAttemptJobId = latest.jobId || test.latestAttemptJobId || null;
+  test.firstAttemptJobId = latest.firstAttemptJobId || test.firstAttemptJobId || null;
+}
+
 function normalizeStaleData(tierData, tierName) {
   if (!tierData) return;
   const effDayMs = effectiveTodayMs(tierName);
   // syncStatusToLastDay assumes a daily cadence (nightly): an empty
   // slot for today means "expected run is missing". The scheduled and
   // release tiers fire weekly / on-demand, so an empty Monday slot is
-  // not a missing run, it's just not Sunday. Skip the status override
-  // for those; keep the padding so calendar gaps still render.
+  // not a missing run, it's just not Sunday. For sparse tiers, sync to
+  // the latest real run so a retry-pass remains green after padding.
   const syncStatus = tierName === 'nightly';
   const buckets = [
     ...(tierData.sections || []),
@@ -248,6 +267,7 @@ function normalizeStaleData(tierData, tierName) {
   buckets.forEach(b => (b.tests || b.jobs || []).forEach(test => {
     alignWeatherHistory(test, effDayMs);
     if (syncStatus) syncStatusToLastDay(test);
+    else syncStatusToLatestRealDay(test);
   }));
 }
 
