@@ -2,7 +2,12 @@ name: Refresh dashboard data
 
 on:
   schedule:
-    - cron: '0 */3 * * *'
+    # Slots at 02, 05, 08, 11, 14, 17, 20, 23 UTC. Anchored so the
+    # latest Monday-morning scrape lands at 05:00 UTC = 08:00 Athens
+    # summer / 07:00 winter, ~2h before the 10:00 Athens engineering
+    # check, and ~9h after release_nightly.yml's 20:15 UTC cron so the
+    # typical run + first few retries have completed by then.
+    - cron: '0 2-23/3 * * *'
   workflow_dispatch:
 
 concurrency:
