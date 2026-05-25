@@ -19,7 +19,7 @@ let state = {
   expandedSections: new Set(),
   expandedGroups: new Set(),
   expandedFlakyTests: new Set(),
-  activeTab: 'nightly',
+  activeTab: 'release-nightly',
   flakyJobFilter: 'all',
   // CoCo-specific state
   activeProject: 'kata', // 'kata' or 'coco'
@@ -41,7 +41,7 @@ async function loadData() {
   state.error = null;
   renderLoading();
 
-  const tiers = ['nightly', 'scheduled', 'release'];
+  const tiers = ['release-nightly', 'e2e-nightly', 'scheduled'];
   state.tiersData = {};
 
   try {
@@ -59,11 +59,11 @@ async function loadData() {
       state.tiersData[t] = d;
     }
 
-    if (!state.tiersData.nightly) {
-      throw new Error('data-nightly.json not available; run ./contrast-local.sh fetch');
+    if (!state.tiersData['e2e-nightly'] && !state.tiersData['release-nightly']) {
+      throw new Error('data-e2e-nightly.json / data-release-nightly.json not available; run ./contrast-local.sh fetch');
     }
 
-    state.data = state.tiersData[state.activeTab] || state.tiersData.nightly;
+    state.data = state.tiersData[state.activeTab] || state.tiersData['release-nightly'] || state.tiersData['e2e-nightly'];
     // Auto-expand every section AND every status group across every tier.
     Object.values(state.tiersData).forEach(tierData => {
       const allSections = [
@@ -149,7 +149,8 @@ function mostRecentNightlyCronTime(now) {
  */
 function effectiveTodayMs(tierName) {
   const now = new Date();
-  if (tierName === 'nightly') {
+  // Both nightly-derived tiers come from the same release_nightly.yml cron.
+  if (tierName === 'e2e-nightly' || tierName === 'release-nightly') {
     return startOfDay(mostRecentNightlyCronTime(now)).getTime();
   }
   return startOfDay(now).getTime();
@@ -252,12 +253,12 @@ function syncStatusToLatestRealDay(test) {
 function normalizeStaleData(tierData, tierName) {
   if (!tierData) return;
   const effDayMs = effectiveTodayMs(tierName);
-  // syncStatusToLastDay assumes a daily cadence (nightly): an empty
-  // slot for today means "expected run is missing". The scheduled and
-  // release tiers fire weekly / on-demand, so an empty Monday slot is
-  // not a missing run, it's just not Sunday. For sparse tiers, sync to
-  // the latest real run so a retry-pass remains green after padding.
-  const syncStatus = tierName === 'nightly';
+  // syncStatusToLastDay assumes a daily cadence: an empty slot for
+  // today means "expected run is missing". The scheduled tier fires
+  // weekly / on-demand, so an empty Monday slot isn't a missing run.
+  // For sparse tiers, sync to the latest real run so a retry-pass
+  // remains green after padding.
+  const syncStatus = tierName === 'e2e-nightly' || tierName === 'release-nightly';
   const buckets = [
     ...(tierData.sections || []),
     ...(tierData.allJobsSection ? [tierData.allJobsSection] : []),
@@ -1865,18 +1866,18 @@ function switchTab(tabName) {
   const grid = document.getElementById('nightly-content');
   if (grid) grid.classList.add('active');
 
-  // Platform pills only make sense on the Nightly tab.
+  // Platform pills (matrix grid view) only make sense on e2e-nightly.
   const pillsRow = document.querySelector('.category-filters');
-  if (pillsRow) pillsRow.style.display = (tabName === 'nightly') ? '' : 'none';
-  if (tabName !== 'nightly') setViewMode('all');
+  if (pillsRow) pillsRow.style.display = (tabName === 'e2e-nightly') ? '' : 'none';
+  if (tabName !== 'e2e-nightly') setViewMode('all');
 
-  // Hide weather columns on sparse-run tiers.
-  document.body.classList.toggle('flat-list-tier', tabName === 'scheduled' || tabName === 'release');
+  // Flat-list view (no matrix grid) on every tab except e2e-nightly.
+  document.body.classList.toggle('flat-list-tier', tabName !== 'e2e-nightly');
 
   if (state.tiersData && state.tiersData[tabName]) {
     state.data = state.tiersData[tabName];
-  } else if (state.tiersData && state.tiersData.nightly) {
-    state.data = state.tiersData.nightly;
+  } else if (state.tiersData) {
+    state.data = state.tiersData['release-nightly'] || state.tiersData['e2e-nightly'];
   }
 
   renderSections();
@@ -2199,7 +2200,7 @@ function renderFlakyTestRow(test) {
  */
 function navigateToJob(jobName) {
   // Switch to nightly tab
-  switchTab('nightly');
+  switchTab('release-nightly');
   
   // Find the test with this job name and expand its section
   if (state.data?.sections) {
@@ -2556,7 +2557,7 @@ function switchProject(project) {
   
   if (project === 'kata') {
     // Ensure a tab is active (default to nightly)
-    if (!state.activeTab) state.activeTab = 'nightly';
+    if (!state.activeTab) state.activeTab = 'release-nightly';
     switchTab(state.activeTab);
   } else if (project === 'coco') {
     // Ensure a CoCo tab is active (default to coco-charts)

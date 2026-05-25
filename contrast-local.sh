@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
 # Local scraper + processor for the contrast CI dashboard.
 # Produces per-tier data files for the dashboard tabs:
-#   nightly / scheduled / release
+#   release-nightly / e2e-nightly / scheduled
 # Each tier aggregates jobs from one or more workflows.
+#
+# release-nightly and e2e-nightly are two views over the same parent
+# workflow, release_nightly.yml. The parent invokes the e2e_nightly
+# reusable workflow (matrix tests) plus artifact build and an
+# e2e_release matrix. The two tabs slice that single run by job-name
+# prefix (see TIER_JOB_FILTER below).
+#
+# Do NOT add release.yml / release_promote.yml here. Those are
+# manual-dispatch release workflows that share the same job-name
+# prefixes (release-requirement: e2e nightly / …) because they use
+# the same reusables, so scraping them would silently mix manual
+# release runs into the nightly view.
 
 set -euo pipefail
 
@@ -34,25 +46,28 @@ trap 'rm -rf "$RUNS_CACHE_DIR" "$JOBS_CACHE_DIR"' EXIT
 
 # tier => space-separated workflow filenames
 declare -A TIER_WORKFLOWS=(
-    [nightly]="release_nightly.yml"
+    [release-nightly]="release_nightly.yml pr_release_artifacts.yml"
+    [e2e-nightly]="release_nightly.yml"
     [scheduled]="k3s_compatibility.yml rim_updates.yml e2e_runtime-reproducibility.yml"
-    [release]="release_publish.yml pr_release_artifacts.yml release_nightly.yml"
 )
-TIERS=(nightly scheduled release)
+TIERS=(release-nightly e2e-nightly scheduled)
 
-# Some tiers consume reusable workflows whose jobs are exposed under a
-# parent-job prefix (e.g. "release-requirement: e2e nightly / <…>"). The
-# scraper drops jobs that don't carry the prefix and strips it from those
-# that do, so the resulting names match what config.yaml expects.
-declare -A TIER_JOB_PREFIX_STRIP=(
-    [nightly]="release-requirement: e2e nightly / "
-)
-
-# Some tiers ingest a workflow that bundles unrelated sub-jobs (e.g.
-# release_nightly invokes e2e_nightly, but those jobs belong to the
-# Nightly tab). Drop names that start with any of these prefixes.
-declare -A TIER_JOB_PREFIX_EXCLUDE=(
-    [release]="release-requirement: e2e nightly / "
+# Per-tier jq filter applied to each job after fetch. The pipeline runs
+# as `[ .[] | <filter> ]`. Use it to keep / drop / rename job names so
+# the tier sees only the slice it cares about.
+#
+#   e2e-nightly   = jobs inside the e2e_nightly reusable, excluding its
+#                   maintenance/cleanup jobs (those gate the matrix but
+#                   aren't tests). Strip the "release-requirement: e2e
+#                   nightly / " prefix so names match config.yaml.
+#   release-nightly = everything else from release_nightly.yml plus the
+#                     e2e_nightly maintenance jobs (since their
+#                     failures are what skip the whole pipeline).
+#
+# scheduled has no filter; all jobs flow through unchanged.
+declare -A TIER_JOB_FILTER=(
+    [e2e-nightly]='select(.name | startswith("release-requirement: e2e nightly / ")) | select((.name | startswith("release-requirement: e2e nightly / maintenance / ")) | not) | .name |= ltrimstr("release-requirement: e2e nightly / ")'
+    [release-nightly]='select(((.name | startswith("release-requirement: e2e nightly / ")) | not) or (.name | startswith("release-requirement: e2e nightly / maintenance / ")))'
 )
 
 # Workflows we want scoped to a single branch. Most should be
@@ -109,36 +124,21 @@ fetch_tier() {
         done
     done
 
-    local prefix="${TIER_JOB_PREFIX_STRIP[$tier]:-}"
-    if [ -n "$prefix" ]; then
-        jq --arg p "$prefix" \
-           '[ .[] | select(.name | startswith($p)) | .name |= ltrimstr($p) ]' \
+    local filter="${TIER_JOB_FILTER[$tier]:-}"
+    if [ -n "$filter" ]; then
+        local before after
+        before=$(jq 'length' "all-jobs-${tier}.json")
+        jq "[ .[] | ${filter} ]" \
            "all-jobs-${tier}.json" > "all-jobs-${tier}.tmp" && \
             mv "all-jobs-${tier}.tmp" "all-jobs-${tier}.json"
-        echo "  stripped prefix '$prefix' ($(jq 'length' "all-jobs-${tier}.json") jobs retained)"
+        after=$(jq 'length' "all-jobs-${tier}.json")
+        echo "  filter applied ($after jobs retained, was $before)"
     fi
 
-    local exclude="${TIER_JOB_PREFIX_EXCLUDE[$tier]:-}"
-    if [ -n "$exclude" ]; then
-        jq --arg p "$exclude" \
-           '[ .[] | select(.name | startswith($p) | not) ]' \
-           "all-jobs-${tier}.json" > "all-jobs-${tier}.tmp" && \
-            mv "all-jobs-${tier}.tmp" "all-jobs-${tier}.json"
-        echo "  excluded prefix '$exclude' ($(jq 'length' "all-jobs-${tier}.json") jobs retained)"
-    fi
-
-    # Drop GitHub Actions matrix-template ghost rows ("release-requirement:
-    # e2e release on ${{ matrix.platform.name }}"). These appear when a
-    # matrix dependency fails before interpolation and carry no signal.
-    local before_ghost after_ghost
-    before_ghost=$(jq 'length' "all-jobs-${tier}.json")
-    jq '[ .[] | select(.name | contains("${{") | not) ]' \
-       "all-jobs-${tier}.json" > "all-jobs-${tier}.tmp" && \
-        mv "all-jobs-${tier}.tmp" "all-jobs-${tier}.json"
-    after_ghost=$(jq 'length' "all-jobs-${tier}.json")
-    if [ "$before_ghost" != "$after_ghost" ]; then
-        echo "  dropped \${{ }} ghost rows ($after_ghost jobs retained, was $before_ghost)"
-    fi
+    # Note: matrix-template ghost rows (job names containing "${{" because
+    # GitHub couldn't interpolate the matrix) are deliberately kept. On
+    # skip days they're the only signal that the matrix didn't expand,
+    # which is exactly what release-nightly needs to surface.
 
     echo '{"jobs":' > "raw-runs-${tier}.json"
     cat "all-jobs-${tier}.json" >> "raw-runs-${tier}.json"
@@ -344,9 +344,9 @@ process_all() {
         process_tier "$tier"
     done
 
-    # Legacy data.json for backward compat (mirror nightly)
-    cp data-nightly.json data.json
-    echo ">> produced data-{nightly,scheduled,release}.json"
+    # Legacy data.json for backward compat (mirror e2e-nightly)
+    cp data-e2e-nightly.json data.json
+    echo ">> produced data-{release-nightly,e2e-nightly,scheduled}.json"
 }
 
 serve() {
@@ -362,7 +362,7 @@ case "${1:-both}" in
     serve) serve ;;
     both) fetch_all; process_all; serve ;;
     tier)
-        t=${2:?Usage: $0 tier <nightly|scheduled|release>}
+        t=${2:?Usage: $0 tier <release-nightly|e2e-nightly|scheduled>}
         fetch_tier "$t"
         process_tier "$t"
         ;;

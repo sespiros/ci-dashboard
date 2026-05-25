@@ -9,12 +9,13 @@ Live: <https://sespiros.github.io/contrast-ci-dashboard/>
 
 | Tab | Source workflow(s) | What it shows |
 |---|---|---|
-| **Nightly** | `e2e_nightly.yml` | Full bare-metal matrix grid (rows = test, columns = last 10 nightlies) per platform |
-| **Nightly Failures** | (aggregated from Nightly) | Per-job failure breakdown across platforms over the window |
+| **Release nightly** | `release_nightly.yml` (non-matrix jobs + maintenance), `pr_release_artifacts.yml` | Artifact build, e2e release matrix, and the e2e_nightly maintenance jobs whose failure can skip the whole pipeline |
+| **e2e nightly** | `release_nightly.yml` (matrix jobs only, maintenance excluded) | Full bare-metal matrix grid (rows = test, columns = last 10 nightlies) per platform |
 | **Scheduled** | `k3s_compatibility.yml`, `rim_updates.yml`, `e2e_runtime-reproducibility.yml` | Flat list of recent runs |
-| **Release** | `release_publish.yml`, `pr_release_artifacts.yml` | Flat list of release-artifact runs |
 
-The Nightly tab has platform pills that scope the grid to one of the four matrix combinations: SNP (palutena), TDX (olimar), SNP+GPU (discovery), TDX+GPU (dgx-007).
+The e2e nightly tab has platform pills that scope the grid to one of the four matrix combinations: SNP (palutena), TDX (olimar), SNP+GPU (discovery), TDX+GPU (dgx-007).
+
+Both nightly-derived tabs scrape the same parent workflow (`release_nightly.yml`). The split between them is purely by job-name prefix: anything under `release-requirement: e2e nightly /` belongs to e2e nightly, except `release-requirement: e2e nightly / maintenance /` which stays on Release nightly because those jobs gate whether the matrix runs at all.
 
 ## Architecture
 
@@ -40,7 +41,7 @@ chmod 600 .env.local
 ./contrast-local.sh fetch     # scrape + process, no server
 ./contrast-local.sh process   # only re-run process-data.js (after config edits)
 ./contrast-local.sh serve     # serve existing data
-./contrast-local.sh tier nightly   # refresh a single tier
+./contrast-local.sh tier e2e-nightly   # refresh a single tier (release-nightly | e2e-nightly | scheduled)
 ```
 
 ## Deployment
@@ -54,7 +55,7 @@ Pages source must be set to **GitHub Actions** in repo settings.
 ## Configuration
 
 `config.yaml` enumerates the four bare-metal nightly platforms and the test-name list per platform.
-Update it whenever a test-name lands or moves in `e2e_nightly.yml`'s matrix; then run `./contrast-local.sh process` (no scrape needed) to re-bake `data-nightly.json`.
+Update it whenever a test-name lands or moves in `e2e_nightly.yml`'s matrix; then run `./contrast-local.sh process` (no scrape needed) to re-bake `data-e2e-nightly.json`.
 
 `fatal_steps` controls which step name counts as a "real test failure" vs an infrastructure flake (currently `E2E Test.*`, matching `e2e.yml`).
 
