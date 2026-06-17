@@ -6,6 +6,7 @@
   <title>Contrast CI Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="logos/contrast.svg">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="ci-architecture.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -40,6 +41,8 @@
 
     <!-- Contrast Content -->
     <div class="project-content active" id="contrast-content">
+      <!-- CI architecture diagram (interactive, above the tabs) -->
+      <div id="ci-architecture"></div>
       <!-- Tabs -->
       <nav class="tabs">
         <button class="tab active" data-tab="e2e-nightly">
@@ -371,6 +374,7 @@
     </div>
   </div>
 
+  <script src="ci-architecture.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

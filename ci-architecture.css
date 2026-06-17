@@ -1,0 +1,203 @@
+/* Interactive CI architecture diagram. Paired with ci-architecture.js.
+   Reuses the dashboard theme variables so it adapts to light/dark. */
+
+.ci-arch {
+  margin-bottom: var(--space-lg, 1.5rem);
+  border: 1px solid var(--border-primary, #2a2f37);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-secondary, #181b20);
+}
+
+.ci-arch-toggle {
+  width: 100%;
+  text-align: left;
+  padding: var(--space-sm, 0.5rem) var(--space-md, 1rem);
+  background: transparent;
+  border: none;
+  color: var(--text-primary, #e6e6e6);
+  font-family: var(--font-sans, sans-serif);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ci-arch-body {
+  padding: 0 var(--space-md, 1rem) var(--space-md, 1rem);
+}
+
+/* Horizontal flow; scrolls instead of squishing on narrow viewports. */
+.ci-flow {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-sm, 0.5rem);
+  overflow-x: auto;
+  padding-bottom: var(--space-sm, 0.5rem);
+}
+
+.ci-stage {
+  flex: 0 0 auto;
+  min-width: 150px;
+  max-width: 230px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm, 0.5rem);
+  padding: var(--space-sm, 0.5rem) var(--space-md, 1rem);
+  border: 1px solid var(--border-primary, #2a2f37);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-tertiary, #1f242b);
+}
+
+.ci-stage.sub {
+  background: var(--bg-secondary, #181b20);
+  border-style: dashed;
+}
+
+.ci-stage-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs, 0.25rem);
+}
+
+.ci-stage-title {
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--text-primary, #e6e6e6);
+  cursor: help;
+}
+
+.ci-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs, 0.25rem);
+}
+
+.ci-chip {
+  font-size: 0.74rem;
+  line-height: 1.2;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-primary, #2a2f37);
+  background: var(--bg-secondary, #181b20);
+  color: var(--text-secondary, #aab1bb);
+  cursor: help;
+  white-space: nowrap;
+  transition: all var(--transition-fast, 0.15s);
+}
+
+.ci-node.active {
+  outline: 2px solid var(--color-accent, #7c5cff);
+  outline-offset: 1px;
+}
+
+.ci-badge {
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.ci-badge.gate { background: var(--color-accent, #7c5cff); color: #fff; }
+.ci-badge.reusable { background: var(--bg-hover, #262c34); color: var(--text-muted, #8b93a0); font-family: var(--font-mono, monospace); text-transform: none; }
+.ci-badge.manual { background: #f0883e; color: #1b1b1b; }
+
+.ci-arrow {
+  align-self: center;
+  color: var(--text-muted, #8b93a0);
+  font-size: 1.1rem;
+  flex: 0 0 auto;
+}
+
+.ci-expand {
+  align-self: flex-start;
+  margin-top: auto;
+  padding: 2px 8px;
+  font-size: 0.74rem;
+  border: 1px solid var(--border-primary, #2a2f37);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-secondary, #181b20);
+  color: var(--text-secondary, #aab1bb);
+  cursor: pointer;
+}
+
+.ci-expand:hover { color: var(--text-primary, #e6e6e6); border-color: var(--color-accent, #7c5cff); }
+
+.ci-subflow {
+  margin-top: var(--space-md, 1rem);
+  padding-top: var(--space-md, 1rem);
+  border-top: 1px dashed var(--border-primary, #2a2f37);
+}
+
+.ci-sub-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #8b93a0);
+  margin-bottom: var(--space-sm, 0.5rem);
+}
+
+.ci-detail {
+  margin-top: var(--space-md, 1rem);
+  padding: var(--space-sm, 0.5rem) var(--space-md, 1rem);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-tertiary, #1f242b);
+  color: var(--text-secondary, #aab1bb);
+  font-size: 0.84rem;
+  line-height: 1.45;
+  min-height: 2.4em;
+}
+
+.ci-detail strong { color: var(--text-primary, #e6e6e6); }
+.ci-detail-hint { color: var(--text-muted, #8b93a0); font-style: italic; }
+
+/* Two distinct affordances:
+   - .ci-link  = jumps to a dashboard row -> hyperlink look (accent, underline,
+                 a ↪ marker on chips, pointer cursor).
+   - non-link  = informational only (e.g. workflow_dispatch, notify-teams,
+                 promote) -> muted, dashed chip, help cursor, no underline. */
+.ci-node.ci-link {
+  cursor: pointer;
+  color: var(--color-accent, #7c5cff);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ci-chip.ci-link {
+  border-color: var(--color-accent, #7c5cff);
+  color: var(--color-accent, #7c5cff);
+}
+.ci-chip.ci-link::after { content: " ↪"; opacity: 0.75; }
+.ci-chip.ci-link:hover { background: var(--bg-hover, #262c34); }
+.ci-stage-title.ci-link:hover { text-decoration-thickness: 2px; }
+
+.ci-chip:not(.ci-link) {
+  border-style: dashed;
+  color: var(--text-muted, #8b93a0);
+}
+
+/* Latest-run status dot on linked jobs (filled in from the loaded data). */
+.ci-stat {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+  background: var(--text-muted, #8b93a0);
+}
+.ci-stat.passed { background: var(--color-passed, #3fb950); }
+.ci-stat.failed { background: var(--color-failed, #f85149); }
+.ci-stat.running { background: var(--color-running, #58a6ff); }
+.ci-stat.flaky { background: #f0883e; }
+.ci-stat.not_run { background: #d9a826; } /* matches the dashboard "missing" dot */
+.ci-stat.none { background: transparent; box-shadow: inset 0 0 0 1px var(--border-primary, #2a2f37); }
+
+/* Brief highlight on the dashboard rows a diagram node jumps to. Uses an
+   inset ring so it does not clobber the row's own background/status colour. */
+.test-row.ci-flash { animation: ci-flash-anim 1.6s ease-out; }
+@keyframes ci-flash-anim {
+  0%, 35% { box-shadow: inset 0 0 0 2px var(--color-accent, #7c5cff); }
+  100% { box-shadow: inset 0 0 0 0 transparent; }
+}
