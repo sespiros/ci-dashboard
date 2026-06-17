@@ -56,18 +56,26 @@ TIERS=(release-nightly e2e-nightly scheduled)
 # as `[ .[] | <filter> ]`. Use it to keep / drop / rename job names so
 # the tier sees only the slice it cares about.
 #
-#   e2e-nightly   = jobs inside the e2e_nightly reusable, excluding its
-#                   maintenance/cleanup jobs (those gate the matrix but
-#                   aren't tests). Strip the "release-requirement: e2e
-#                   nightly / " prefix so names match config.yaml.
+#   e2e-nightly   = jobs inside the e2e_nightly reusable, excluding the
+#                   prep jobs that gate the matrix but aren't tests:
+#                   per-platform "maintenance <platform>" jobs, the
+#                   "Build cleanup-bare-metal image" job, and the
+#                   "Notify teams channel of failure" job. Strip the
+#                   "release-requirement: e2e nightly / " prefix, then
+#                   collapse the per-test name doubling: the
+#                   e2e_nightly_platform matrix job and the e2e.yml test
+#                   job it calls share the same name, so a test renders as
+#                   "<platform> / <test> / <test>"; drop the duplicate
+#                   trailing segment so names match config.yaml's
+#                   "<platform> / <test>".
 #   release-nightly = everything else from release_nightly.yml plus the
-#                     e2e_nightly maintenance jobs (since their
-#                     failures are what skip the whole pipeline).
+#                     e2e_nightly prep jobs (maintenance + image build),
+#                     since their failures are what skip the whole pipeline.
 #
 # scheduled has no filter; all jobs flow through unchanged.
 declare -A TIER_JOB_FILTER=(
-    [e2e-nightly]='select(.name | startswith("release-requirement: e2e nightly / ")) | select((.name | startswith("release-requirement: e2e nightly / maintenance / ")) | not) | .name |= ltrimstr("release-requirement: e2e nightly / ")'
-    [release-nightly]='select(((.name | startswith("release-requirement: e2e nightly / ")) | not) or (.name | startswith("release-requirement: e2e nightly / maintenance / ")))'
+    [e2e-nightly]='select(.name | startswith("release-requirement: e2e nightly / ")) | select((.name | startswith("release-requirement: e2e nightly / maintenance ")) | not) | select((.name | startswith("release-requirement: e2e nightly / Build cleanup-bare-metal image")) | not) | select((.name | startswith("release-requirement: e2e nightly / Notify teams channel")) | not) | .name |= ltrimstr("release-requirement: e2e nightly / ") | .name |= (split(" / ") | if (length >= 2 and .[-1] == .[-2]) then .[:-1] else . end | join(" / "))'
+    [release-nightly]='select(((.name | startswith("release-requirement: e2e nightly / ")) | not) or (.name | startswith("release-requirement: e2e nightly / maintenance ")) or (.name | startswith("release-requirement: e2e nightly / Build cleanup-bare-metal image")))'
 )
 
 # Workflows we want scoped to a single branch. Most should be
