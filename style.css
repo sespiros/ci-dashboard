@@ -2700,29 +2700,51 @@ body.flat-list-tier .test-row:hover { background: var(--bg-tertiary); }
   }
   
   .filter-buttons {
+    /* In the column layout, the base `flex: 1 1 520px` would treat 520px as a
+       vertical basis, making this row 520px tall and stretching the buttons
+       into empty columns. Reset to natural height. */
+    flex: 0 0 auto;
+    justify-content: flex-start;
+    align-items: center;
     overflow-x: auto;
     padding-bottom: var(--space-sm);
-  }
-  
-  .test-table-header {
-    display: none;
-  }
-  
-  .test-row {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    padding: var(--space-md);
-  }
-  
-  .test-name-col {
-    width: 100%;
   }
   
   .quick-stats {
     flex-wrap: wrap;
   }
-  
+
+  /* Keep the tabular grid readable: scroll it horizontally rather than
+     collapsing every row into a tall, centered vertical stack. Job names
+     here are long, so preserving the columns beats squeezing them. */
+  .test-group-content {
+    overflow-x: auto;
+  }
+  .test-table-header,
+  .test-row {
+    min-width: 880px;
+  }
+}
+
+@media (max-width: 600px) {
+  /* Genuinely narrow screens: collapse each row into a left-aligned card. */
+  .test-group-content {
+    overflow-x: visible;
+  }
+  .test-table-header {
+    display: none;
+  }
+  .test-row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    padding: var(--space-md);
+    min-width: 0;
+  }
+  .test-name-col {
+    width: 100%;
+  }
   .test-maintainers-col {
     display: none;
   }

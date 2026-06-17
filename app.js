@@ -19,7 +19,7 @@ let state = {
   expandedSections: new Set(),
   expandedGroups: new Set(),
   expandedFlakyTests: new Set(),
-  activeTab: 'release-nightly',
+  activeTab: 'e2e-nightly',
   flakyJobFilter: 'all',
   // CoCo-specific state
   activeProject: 'kata', // 'kata' or 'coco'
@@ -63,7 +63,7 @@ async function loadData() {
       throw new Error('data-e2e-nightly.json / data-release-nightly.json not available; run ./contrast-local.sh fetch');
     }
 
-    state.data = state.tiersData[state.activeTab] || state.tiersData['release-nightly'] || state.tiersData['e2e-nightly'];
+    state.data = state.tiersData[state.activeTab] || state.tiersData['e2e-nightly'] || state.tiersData['release-nightly'];
     // Auto-expand every section AND every status group across every tier.
     Object.values(state.tiersData).forEach(tierData => {
       const allSections = [
@@ -1090,9 +1090,13 @@ function renderTestGroup(section, tests, groupId, label, statusClass, isExpanded
 
 function getPlatformLabel(test) {
   const fn = test.fullName || test.jobName || test.name || '';
-  const head = fn.split(' / ')[0];
-  if (/^Metal-QEMU-/.test(head)) return head.replace(/^Metal-QEMU-/, '');
-  return '';
+  // The platform can appear anywhere in the job path: the e2e tier puts it
+  // first ("Metal-QEMU-SNP / atls"), but release-nightly jobs embed it later
+  // ("… / maintenance Metal-QEMU-SNP / Cleanup Metal-QEMU-SNP", "e2e release
+  // on Metal-QEMU-TDX (x86_64-linux)"). Match the longest variant first so
+  // SNP-GPU / TDX-GPU / SNP-DEV win over the bare SNP / TDX prefixes.
+  const m = fn.match(/Metal-QEMU-(SNP-GPU|TDX-GPU|SNP-DEV|SNP|TDX)/);
+  return m ? m[1] : '';
 }
 
 function renderTestRow(sectionId, test) {
@@ -1877,7 +1881,7 @@ function switchTab(tabName) {
   if (state.tiersData && state.tiersData[tabName]) {
     state.data = state.tiersData[tabName];
   } else if (state.tiersData) {
-    state.data = state.tiersData['release-nightly'] || state.tiersData['e2e-nightly'];
+    state.data = state.tiersData['e2e-nightly'] || state.tiersData['release-nightly'];
   }
 
   renderSections();
@@ -2200,7 +2204,7 @@ function renderFlakyTestRow(test) {
  */
 function navigateToJob(jobName) {
   // Switch to nightly tab
-  switchTab('release-nightly');
+  switchTab('e2e-nightly');
   
   // Find the test with this job name and expand its section
   if (state.data?.sections) {
@@ -2557,7 +2561,7 @@ function switchProject(project) {
   
   if (project === 'kata') {
     // Ensure a tab is active (default to nightly)
-    if (!state.activeTab) state.activeTab = 'release-nightly';
+    if (!state.activeTab) state.activeTab = 'e2e-nightly';
     switchTab(state.activeTab);
   } else if (project === 'coco') {
     // Ensure a CoCo tab is active (default to coco-charts)
