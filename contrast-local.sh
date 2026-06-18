@@ -46,9 +46,12 @@ trap 'rm -rf "$RUNS_CACHE_DIR" "$JOBS_CACHE_DIR"' EXIT
 
 # tier => space-separated workflow filenames
 declare -A TIER_WORKFLOWS=(
-    [release-nightly]="release_nightly.yml pr_release_artifacts.yml"
+    [release-nightly]="release_nightly.yml"
     [e2e-nightly]="release_nightly.yml"
-    [scheduled]="k3s_compatibility.yml rim_updates.yml e2e_runtime-reproducibility.yml"
+    # pr_release_artifacts is weekly, so it belongs with the sparse-cadence
+    # scheduled tier (which keeps the last real status) rather than the
+    # nightly-cadence release tier (which would flag it Missing 6 days a week).
+    [scheduled]="rim_updates.yml e2e_runtime-reproducibility.yml pr_release_artifacts.yml"
 )
 TIERS=(release-nightly e2e-nightly scheduled)
 
@@ -143,10 +146,13 @@ fetch_tier() {
         echo "  filter applied ($after jobs retained, was $before)"
     fi
 
-    # Note: matrix-template ghost rows (job names containing "${{" because
-    # GitHub couldn't interpolate the matrix) are deliberately kept. On
-    # skip days they're the only signal that the matrix didn't expand,
-    # which is exactly what release-nightly needs to surface.
+    # Drop matrix-template ghost rows: when a matrix job is skipped GitHub
+    # never interpolates it and emits a single job whose name still contains
+    # the literal "${{ ... }}". They are not real jobs and only ever render as
+    # a misleading "missing" row, so filter them out across every tier.
+    jq '[ .[] | select((.name | contains("${{")) | not) ]' \
+       "all-jobs-${tier}.json" > "all-jobs-${tier}.tmp" && \
+        mv "all-jobs-${tier}.tmp" "all-jobs-${tier}.json"
 
     echo '{"jobs":' > "raw-runs-${tier}.json"
     cat "all-jobs-${tier}.json" >> "raw-runs-${tier}.json"
@@ -267,7 +273,16 @@ EOF
 
     # wipe prior data.json so the weather window for this tier is clean
     rm -f data.json
-    NODE_OPTIONS="--max-old-space-size=6144" node scripts/process-data.js > /dev/null
+    # The nightly tiers come from release_nightly.yml (20:15 UTC cron). Bucket
+    # their jobs by cron day (offset 20h15m = 72900000ms) so a run that spans
+    # UTC midnight stays in one day-slot and lines up with the frontend's
+    # cron-day "today". Other tiers bucket by plain UTC day (offset 0).
+    local bucket_offset=0
+    case "$tier" in
+        e2e-nightly|release-nightly) bucket_offset=72900000 ;;
+    esac
+    NODE_OPTIONS="--max-old-space-size=6144" NIGHTLY_BUCKET_OFFSET_MS="$bucket_offset" \
+        node scripts/process-data.js > /dev/null
     mv data.json "data-${tier}.json"
     echo "  wrote data-${tier}.json"
 }

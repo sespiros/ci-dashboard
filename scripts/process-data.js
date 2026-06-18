@@ -25,6 +25,17 @@ function utcStartOfDay(d) {
   return x;
 }
 
+// Nightly bucketing: a release_nightly run fires at 20:15 UTC and finishes
+// across the following UTC midnight, so its jobs would otherwise split between
+// two day-slots (tests before midnight, e2e-release after). When
+// NIGHTLY_BUCKET_OFFSET_MS is set (the nightly tiers, see contrast-local.sh),
+// shift each run/job timestamp back by that offset so the whole run buckets
+// under the cron day it belongs to, matching the frontend's cron-day "today".
+const NIGHTLY_BUCKET_OFFSET_MS = Number(process.env.NIGHTLY_BUCKET_OFFSET_MS || 0);
+function bucketTs(d) {
+  return new Date(new Date(d).getTime() - NIGHTLY_BUCKET_OFFSET_MS);
+}
+
 // Load config
 let config;
 try {
@@ -502,7 +513,9 @@ function getDataAnchorDate() {
     .filter(Number.isFinite);
 
   if (firstAttemptTimes.length === 0) return new Date();
-  return new Date(Math.max(...firstAttemptTimes));
+  // Anchor the weather grid on the cron day of the latest run, so the grid
+  // days line up with the (shifted) per-run buckets below.
+  return new Date(Math.max(...firstAttemptTimes) - NIGHTLY_BUCKET_OFFSET_MS);
 }
 
 const dataAnchorDate = getDataAnchorDate();
@@ -662,7 +675,7 @@ const sections = (config.sections || []).map(sectionConfig => {
       // Bucket by the first attempt's queue time: rerun attempts can be
       // created hours later, but the weather slot belongs to the cron day.
       const dayRun = runRecords.find(run => {
-        return utcDayKey(run.firstAttempt.created_at || run.firstAttempt.started_at) === dateKey;
+        return utcDayKey(bucketTs(run.firstAttempt.created_at || run.firstAttempt.started_at)) === dateKey;
       }) || null;
       const dayJob = dayRun?.latestAttempt || null;
       const dayFirstAttemptJob = dayRun?.firstAttempt || null;
@@ -1048,7 +1061,7 @@ const allJobsSection = {
       const dateKey = utcDayKey(date);
 
       const dayRun = runRecords.find(run => {
-        return utcDayKey(run.firstAttempt.created_at || run.firstAttempt.started_at) === dateKey;
+        return utcDayKey(bucketTs(run.firstAttempt.created_at || run.firstAttempt.started_at)) === dateKey;
       }) || null;
       const dayJob = dayRun?.latestAttempt || null;
       const dayFirstAttemptJob = dayRun?.firstAttempt || null;
@@ -1469,7 +1482,7 @@ try {
           const dayJobs = matchingJobs.filter(job => {
             // Bucket by created_at (queue time): cron-fired jobs all carry the
         // cron's UTC day even if a slow runner pushes started_at past midnight.
-        return utcDayKey(job.created_at || job.started_at) === dateKey;
+        return utcDayKey(bucketTs(job.created_at || job.started_at)) === dateKey;
           });
           
           const dayJob = dayJobs[0] || null;
@@ -1621,7 +1634,7 @@ try {
           const dayJobs = matchingJobs.filter(job => {
             // Bucket by created_at (queue time): cron-fired jobs all carry the
         // cron's UTC day even if a slow runner pushes started_at past midnight.
-        return utcDayKey(job.created_at || job.started_at) === dateKey;
+        return utcDayKey(bucketTs(job.created_at || job.started_at)) === dateKey;
           });
           
           const dayJob = dayJobs[0] || null;
