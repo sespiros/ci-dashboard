@@ -2,12 +2,15 @@ name: Refresh dashboard data
 
 on:
   schedule:
-    # Slots at 02, 05, 08, 11, 14, 17, 20, 23 UTC. Anchored so the
-    # latest Monday-morning scrape lands at 05:00 UTC = 08:00 Athens
-    # summer / 07:00 winter, ~2h before the 10:00 Athens engineering
-    # check, and ~9h after release_nightly.yml's 20:15 UTC cron so the
-    # typical run + first few retries have completed by then.
-    - cron: '0 2-23/3 * * *'
+    # Scrape on the :23 minute, not :00: the top of the hour is GitHub's most
+    # contended scheduler slot, where runs are most often delayed or dropped.
+    # Hourly through 00:00-09:00 UTC covers the release_nightly.yml completion
+    # window (nightly fires 20:15 UTC, e2e-release lands ~01:00-05:00 UTC) plus
+    # the ~07:00 UTC Athens-morning check, so a dropped run never leaves more
+    # than ~2h of staleness when it matters. Sparser the rest of the day, when
+    # nothing new lands anyway.
+    - cron: '23 0-9 * * *'
+    - cron: '23 12,15,18,21 * * *'
   workflow_dispatch:
 
 concurrency:
