@@ -239,7 +239,7 @@
     const flow = PIPELINE.map(stageCard).join('<span class="ci-arrow">→</span>');
     root.innerHTML =
       '<div class="ci-arch">' +
-        '<button class="ci-arch-toggle" aria-expanded="false">▸ CI pipeline architecture</button>' +
+        '<button class="ci-arch-toggle" aria-expanded="false">▸ CI pipeline</button>' +
         '<div class="ci-arch-body" hidden>' +
           '<div class="ci-flow ci-flow-main">' + flow + '</div>' +
           '<div class="ci-subflow" hidden></div>' +
@@ -254,7 +254,7 @@
         const open = body.hidden;
         body.hidden = !open;
         toggle.setAttribute('aria-expanded', String(open));
-        toggle.textContent = (open ? '▾' : '▸') + ' CI pipeline architecture';
+        toggle.textContent = (open ? '▾' : '▸') + ' CI pipeline';
         return;
       }
       const exp = e.target.closest('.ci-expand');
