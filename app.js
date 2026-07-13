@@ -1875,8 +1875,11 @@ function switchTab(tabName) {
   if (pillsRow) pillsRow.style.display = (tabName === 'e2e-nightly') ? '' : 'none';
   if (tabName !== 'e2e-nightly') setViewMode('all');
 
-  // Flat-list view (no matrix grid) on every tab except e2e-nightly.
-  document.body.classList.toggle('flat-list-tier', tabName !== 'e2e-nightly');
+  // Collapse to the weatherless flat list only on Scheduled. Release-nightly
+  // is a daily tier (same release_nightly.yml cron as e2e-nightly), so it keeps
+  // the Weather + Retried columns. The matrix/platform-pill view is gated
+  // separately above, so release-nightly still renders as a flat list.
+  document.body.classList.toggle('flat-list-tier', tabName === 'scheduled');
 
   if (state.tiersData && state.tiersData[tabName]) {
     state.data = state.tiersData[tabName];
@@ -2462,7 +2465,7 @@ function init() {
     renderSections();
     updateJobCount();
   });
-  // In flat-list-tier mode (Scheduled/Release) the weather column is hidden,
+  // In flat-list-tier mode (Scheduled) the weather column is hidden,
   // so make the row's test-name a click target for the history modal.
   document.addEventListener('click', (e) => {
     if (!document.body.classList.contains('flat-list-tier')) return;

@@ -439,7 +439,6 @@ body {
 .stat-passed .stat-value { color: var(--color-passed); }
 .dot-flaky { background: #f0883e; }
 .filter-btn[data-filter="flaky"].active { border-color: #f0883e; color: #f0883e; }
-/* Flat-list tiers (Scheduled, Release): hide weather columns */
 /* Drop maintainers column globally; new layout has 7 cols (incl. Platform). */
 .test-table-header,
 .test-row { grid-template-columns: 100px 2fr 120px 120px 120px 140px 80px !important; }
@@ -451,7 +450,7 @@ body {
 }
 .test-platform-col .platform-empty { color: var(--text-muted); }
 
-/* Scheduled / Release: hide weather + retried, collapse to 5 cols (incl. Platform). */
+/* Scheduled (non-daily): hide weather + retried, collapse to 5 cols (incl. Platform). */
 body.flat-list-tier .test-table-header,
 body.flat-list-tier .test-row { grid-template-columns: 100px 2fr 120px 120px 120px !important; }
 body.flat-list-tier .test-weather-col,
