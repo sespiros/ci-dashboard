@@ -13,7 +13,7 @@ Live: <https://sespiros.github.io/contrast-ci-dashboard/>
 | **e2e nightly** | `release_nightly.yml` (matrix jobs only, maintenance excluded) | Full bare-metal matrix grid (rows = test, columns = last 10 nightlies) per platform |
 | **Scheduled** | `k3s_compatibility.yml`, `rim_updates.yml`, `e2e_runtime-reproducibility.yml` | Flat list of recent runs |
 
-The e2e nightly tab has platform pills that scope the grid to one of the four matrix combinations: SNP (palutena), TDX (olimar), SNP+GPU (discovery), TDX+GPU (dgx-007).
+The e2e nightly tab has platform pills that scope the grid to one of the four matrix combinations: SNP (palutena), TDX (olimar), SNP+GPU (discovery), TDX+GPU (b13-gs01).
 
 Both nightly-derived tabs scrape the same parent workflow (`release_nightly.yml`). The split between them is purely by job-name prefix: anything under `release-requirement: e2e nightly /` belongs to e2e nightly, except `release-requirement: e2e nightly / maintenance /` which stays on Release nightly because those jobs gate whether the matrix runs at all.
 
